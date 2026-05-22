@@ -52,6 +52,8 @@ class NotchViewModel: ObservableObject {
     @Published var instancesPageMusicCardHeight: CGFloat = 0
     @Published var animatedTopCornerRadius: CGFloat = 6
     @Published var animatedBottomCornerRadius: CGFloat = 12
+    /// Extra width beyond device notch for closed state activity indicators (music, processing, etc.)
+    @Published var closedNotchExpansionWidth: CGFloat = 0
 
     // MARK: - Dependencies
 
@@ -212,7 +214,7 @@ class NotchViewModel: ObservableObject {
     private var currentChatSession: SessionState?
 
     private func handleMouseMove(_ location: CGPoint) {
-        let inNotch = geometry.isPointInNotch(location)
+        let inNotch = geometry.isPointInNotch(location, expansionWidth: closedNotchExpansionWidth)
         let inOpened = status == .opened && geometry.isPointInOpenedPanel(location, size: openedSize)
 
         let newHovering = inNotch || inOpened
@@ -226,14 +228,14 @@ class NotchViewModel: ObservableObject {
         hoverTimer?.cancel()
         hoverTimer = nil
 
-        // Start hover timer to auto-expand after 1 second
+        // Start hover timer to auto-expand after 0.8 seconds
         if isHovering && (status == .closed || status == .popping) {
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self = self, self.isHovering else { return }
                 self.notchOpen(reason: .hover)
             }
             hoverTimer = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: workItem)
         }
     }
 
@@ -253,7 +255,7 @@ class NotchViewModel: ObservableObject {
                 }
             }
         case .closed, .popping:
-            if geometry.isPointInNotch(location) {
+            if geometry.isPointInNotch(location, expansionWidth: closedNotchExpansionWidth) {
                 notchOpen(reason: .click)
             }
         }

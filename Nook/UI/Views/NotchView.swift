@@ -237,6 +237,7 @@ struct NotchView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .preferredColorScheme(.dark)
         .onAppear {
+            viewModel.closedNotchExpansionWidth = expansionWidth
             sessionMonitor.startMonitoring()
             syncInstancesPageLayoutState()
             handleProcessingChange()
@@ -259,6 +260,9 @@ struct NotchView: View {
         .onChange(of: musicManager.playbackState) { _, _ in
             syncInstancesPageLayoutState()
             handleProcessingChange()
+        }
+        .onChange(of: expansionWidth) { _, newValue in
+            viewModel.closedNotchExpansionWidth = newValue
         }
     }
 
