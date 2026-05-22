@@ -11,8 +11,8 @@ import SwiftUI
 
 // Corner radius constants
 private let cornerRadiusInsets = (
-    opened: (top: CGFloat(19), bottom: CGFloat(24)),
-    closed: (top: CGFloat(6), bottom: CGFloat(14))
+    opened: (top: CGFloat(12), bottom: CGFloat(24)),
+    closed: (top: CGFloat(6), bottom: CGFloat(12))
 )
 
 struct NotchView: View {
@@ -133,22 +133,11 @@ struct NotchView: View {
     // MARK: - Corner Radii
 
     private var topCornerRadius: CGFloat {
-        viewModel.status == .opened
-            ? cornerRadiusInsets.opened.top
-            : cornerRadiusInsets.closed.top
+        viewModel.animatedTopCornerRadius
     }
 
     private var bottomCornerRadius: CGFloat {
-        viewModel.status == .opened
-            ? cornerRadiusInsets.opened.bottom
-            : cornerRadiusInsets.closed.bottom
-    }
-
-    private var currentNotchShape: NotchShape {
-        NotchShape(
-            topCornerRadius: topCornerRadius,
-            bottomCornerRadius: bottomCornerRadius
-        )
+        viewModel.animatedBottomCornerRadius
     }
 
     // Animation springs
@@ -175,9 +164,12 @@ struct NotchView: View {
                     .padding([.horizontal, .bottom], viewModel.status == .opened ? 12 : 0)
                     .background {
                         if isAdaptiveBackgroundEnabled {
-                            ZStack {
-                                expandedNotchTheme.backgroundGradient
-
+                            NotchShape(
+                                topCornerRadius: viewModel.animatedTopCornerRadius,
+                                bottomCornerRadius: viewModel.animatedBottomCornerRadius
+                            )
+                            .fill(expandedNotchTheme.backgroundGradient)
+                            .overlay(
                                 RadialGradient(
                                     colors: [
                                         expandedNotchTheme.primaryText.opacity(0.08),
@@ -187,14 +179,24 @@ struct NotchView: View {
                                     startRadius: 12,
                                     endRadius: notchSize.width * 0.9
                                 )
-
-                                expandedNotchTheme.overlayColor
-                            }
+                            )
+                            .overlay(expandedNotchTheme.overlayColor)
+                            .clipShape(NotchShape(
+                                topCornerRadius: viewModel.animatedTopCornerRadius,
+                                bottomCornerRadius: viewModel.animatedBottomCornerRadius
+                            ))
                         } else {
-                            Color.black
+                            NotchShape(
+                                topCornerRadius: viewModel.animatedTopCornerRadius,
+                                bottomCornerRadius: viewModel.animatedBottomCornerRadius
+                            )
+                            .fill(Color.black)
                         }
                     }
-                    .clipShape(currentNotchShape)
+                    .clipShape(NotchShape(
+                        topCornerRadius: viewModel.animatedTopCornerRadius,
+                        bottomCornerRadius: viewModel.animatedBottomCornerRadius
+                    ))
                     .overlay(alignment: .top) {
                         Rectangle()
                             .fill(viewModel.status == .opened && isAdaptiveBackgroundEnabled ? expandedNotchTheme.overlayColor : .black)
@@ -210,8 +212,8 @@ struct NotchView: View {
                         maxHeight: viewModel.status == .opened ? notchSize.height : nil,
                         alignment: .top
                     )
-                    .animation(viewModel.status == .opened ? openAnimation : closeAnimation, value: viewModel.status)
                     .animation(openAnimation, value: notchSize) // Animate container size changes between content types
+                    .animation(viewModel.status == .opened ? openAnimation : closeAnimation, value: viewModel.status)
                     .animation(.smooth, value: activityCoordinator.expandingActivity)
                     .animation(.smooth, value: hasPendingPermission)
                     .animation(.smooth, value: hasWaitingForInput)
@@ -350,6 +352,7 @@ struct NotchView: View {
             if viewModel.status == .opened {
                 contentView
                     .frame(width: notchSize.width - 24) // Fixed width to prevent reflow
+                    .compositingGroup() // Flatten content before transition effects to prevent layer interleaving artifacts
                     .transition(
                         .asymmetric(
                             insertion: .scale(scale: 0.8, anchor: .top)

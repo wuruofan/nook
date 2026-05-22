@@ -50,6 +50,8 @@ class NotchViewModel: ObservableObject {
     @Published var instancesPageShowsMusic: Bool = false
     @Published var instancesPageRowHeight: CGFloat = 0
     @Published var instancesPageMusicCardHeight: CGFloat = 0
+    @Published var animatedTopCornerRadius: CGFloat = 6
+    @Published var animatedBottomCornerRadius: CGFloat = 12
 
     // MARK: - Dependencies
 
@@ -292,7 +294,11 @@ class NotchViewModel: ObservableObject {
 
     func notchOpen(reason: NotchOpenReason = .unknown) {
         openReason = reason
-        status = .opened
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.8, blendDuration: 0)) {
+            status = .opened
+            animatedTopCornerRadius = 12
+            animatedBottomCornerRadius = 24
+        }
 
         // Don't restore chat on notification - show instances list instead
         if reason == .notification {
@@ -315,7 +321,11 @@ class NotchViewModel: ObservableObject {
         if case .chat(let session) = contentType {
             currentChatSession = session
         }
-        status = .closed
+        withAnimation(.spring(response: 0.45, dampingFraction: 1.0, blendDuration: 0)) {
+            status = .closed
+            animatedTopCornerRadius = 6
+            animatedBottomCornerRadius = 12
+        }
         contentType = .instances
     }
 
