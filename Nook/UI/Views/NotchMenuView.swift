@@ -23,6 +23,7 @@ struct NotchMenuView: View {
     @State private var hooksInstalled: Bool = false
     @State private var launchAtLogin: Bool = false
     @AppStorage(AppSettings.artworkAdaptiveBackgroundEnabledKey) private var artworkAdaptiveBackgroundEnabled = true
+    @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
 
     var body: some View {
         // ScrollView so the menu gracefully scrolls when content exceeds the
@@ -62,6 +63,31 @@ struct NotchMenuView: View {
                     .background(separatorColor)
                     .padding(.vertical, 4)
 
+                // Music settings
+                MenuToggleRow(
+                    icon: "photo",
+                    label: "Artwork Adaptive Background",
+                    isOn: artworkAdaptiveBackgroundEnabled,
+                    primaryTextColor: primaryTextColor,
+                    secondaryTextColor: secondaryTextColor
+                ) {
+                    artworkAdaptiveBackgroundEnabled.toggle()
+                }
+
+                MenuToggleRow(
+                    icon: "music.note",
+                    label: "Music Edge Glow",
+                    isOn: musicEdgeGlowEnabled,
+                    primaryTextColor: primaryTextColor,
+                    secondaryTextColor: secondaryTextColor
+                ) {
+                    musicEdgeGlowEnabled.toggle()
+                }
+
+                Divider()
+                    .background(separatorColor)
+                    .padding(.vertical, 4)
+
                 // System settings
                 MenuToggleRow(
                     icon: "power",
@@ -81,16 +107,6 @@ struct NotchMenuView: View {
                     } catch {
                         print("Failed to toggle launch at login: \(error)")
                     }
-                }
-
-                MenuToggleRow(
-                    icon: "photo",
-                    label: "Artwork Adaptive Background",
-                    isOn: artworkAdaptiveBackgroundEnabled,
-                    primaryTextColor: primaryTextColor,
-                    secondaryTextColor: secondaryTextColor
-                ) {
-                    artworkAdaptiveBackgroundEnabled.toggle()
                 }
 
                 MenuToggleRow(

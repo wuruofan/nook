@@ -350,9 +350,12 @@ struct NotchView: View {
     private var musicEdgeGlowVisible: Bool {
         musicManager.playbackState.isPlaying
             && viewModel.status == .closed
+            && musicEdgeGlowEnabled
     }
 
     @State private var breathingOpacity: CGFloat = 0.9
+
+    @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
 
     @ViewBuilder
     private var musicEdgeGlow: some View {
