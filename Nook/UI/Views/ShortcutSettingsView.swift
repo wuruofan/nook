@@ -17,7 +17,6 @@ struct ShortcutSettingsView: View {
     @State private var recordingAction: ShortcutAction?
     @State private var showResetConfirmation = false
     @State private var conflictFlash: ShortcutAction?
-    private var cancellables = Set<AnyCancellable>()
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {

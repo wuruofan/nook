@@ -59,6 +59,14 @@ struct NotchMenuView: View {
                     secondaryTextColor: secondaryTextColor
                 )
 
+                MenuRow(
+                    icon: "keyboard",
+                    label: "Keyboard Shortcuts...",
+                    primaryTextColor: primaryTextColor
+                ) {
+                    viewModel.pushTo(.shortcuts)
+                }
+
                 Divider()
                     .background(separatorColor)
                     .padding(.vertical, 4)

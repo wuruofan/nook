@@ -540,6 +540,13 @@ struct NotchView: View {
                     secondaryTextColor: expandedSecondaryTextColor,
                     separatorColor: expandedSeparatorColor
                 )
+            case .shortcuts:
+                ShortcutSettingsView(
+                    viewModel: viewModel,
+                    primaryTextColor: expandedPrimaryTextColor,
+                    secondaryTextColor: expandedSecondaryTextColor,
+                    separatorColor: expandedSeparatorColor
+                )
             case .chat(let session):
                 ChatView(
                     sessionId: session.sessionId,
