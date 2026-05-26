@@ -35,6 +35,7 @@ enum AppSettings {
     private nonisolated(unsafe) static let defaults = UserDefaults.standard
     nonisolated static let artworkAdaptiveBackgroundEnabledKey = "artworkAdaptiveBackgroundEnabled"
     nonisolated static let musicEdgeGlowEnabledKey = "musicEdgeGlowEnabled"
+    nonisolated static let shortcutsKey = "nook_shortcut_bindings"
 
     // MARK: - Keys
 
