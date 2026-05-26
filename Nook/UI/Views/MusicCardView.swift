@@ -82,62 +82,37 @@ private extension MusicCardView {
     }
 
     var artworkColumn: some View {
-        VStack(spacing: 6) {
-            artwork
-            sourceBadge
-        }
-        .frame(width: 88)
-    }
-
-    var artwork: some View {
         Button(action: musicManager.openSourceApp) {
-            Group {
-                if let image = musicManager.albumArt {
-                    Image(nsImage: image)
+            ZStack(alignment: .bottomTrailing) {
+                Group {
+                    if let image = musicManager.albumArt {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Image(systemName: musicManager.fallbackSymbolName)
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundColor(.white.opacity(0.75))
+                    }
+                }
+                .frame(width: 76, height: 76)
+                .background(Color.white.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                if let sourceApp = musicManager.sourceApp, let icon = sourceApp.icon {
+                    Image(nsImage: icon)
                         .resizable()
-                        .scaledToFill()
-                } else {
-                    Image(systemName: musicManager.fallbackSymbolName)
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundColor(.white.opacity(0.75))
+                        .scaledToFit()
+                        .frame(width: 16, height: 16)
+                        .padding(3)
+                        .background(Color.black.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .padding(3)
                 }
             }
-            .frame(width: 56, height: 56)
-            .background(Color.white.opacity(0.06))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .frame(width: 76, height: 76)
         }
         .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    var sourceBadge: some View {
-        if let sourceApp = musicManager.sourceApp {
-            Button(action: musicManager.openSourceApp) {
-                HStack(spacing: 5) {
-                    if let icon = sourceApp.icon {
-                        Image(nsImage: icon)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 12, height: 12)
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
-                    }
-
-                    Text(sourceApp.displayName)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.white.opacity(0.72))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.white.opacity(0.07))
-                )
-            }
-            .buttonStyle(.plain)
-        }
     }
 
     var controlsRow: some View {
