@@ -57,6 +57,11 @@ class NotchViewModel: ObservableObject {
     /// Extra width beyond device notch for closed state activity indicators (music, processing, etc.)
     @Published var closedNotchExpansionWidth: CGFloat = 0
     @Published var navigationStack: [NotchContentType] = []
+    /// Index for keyboard-driven session selection in the instances view
+    @Published var keyboardSelectedIndex: Int = 0
+    /// Trigger to activate the currently keyboard-selected session
+    @Published var keyboardActivateTrigger: UUID?
+
 
     // MARK: - Dependencies
 
@@ -84,20 +89,24 @@ class NotchViewModel: ObservableObject {
                 height: 580
             )
         case .menu:
-            // Base height covers all static rows (Back, 3 picker rows, 3 toggles,
-            // Accessibility, Update, GitHub, Quit + 4 dividers + padding).
+            // Base: 4 MenuRow + 4 MenuToggleRow + 3 PickerRow (collapsed) ≈ 11 × 36pt
+            //       + 1 AccessibilityRow ≈ 40pt + 4 dividers × 9pt
+            //       + 16 spacings × 4pt + 16pt outer padding ≈ 552
+            //       → 600 (48pt margin for picker collapsed overhead)
             // Picker expansion deltas added on top when expanded.
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
-                height: 540
+                height: menuBaseHeight
                     + screenSelector.expandedPickerHeight
                     + soundSelector.expandedPickerHeight
                     + claudeDirSelector.expandedPickerHeight
             )
         case .shortcuts:
+            // 36pt Back + 40pt × 8 ShortcutRows + 36pt Reset + 9pt × 2 dividers
+            // + 4pt × 11 spacings + 16pt outer padding + 24pt header = 494 → 520 (26pt margin)
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
-                height: 480
+                height: 520
             )
         case .instances:
             return CGSize(
@@ -106,6 +115,13 @@ class NotchViewModel: ObservableObject {
             )
         }
     }
+
+    // MARK: - Layout Constants
+
+    /// Base height for menu page, before adding expanded picker deltas.
+    /// 11 rows × 36pt + 1 AccessibilityRow × 40pt + 4 dividers × 9pt
+    /// + 16 spacings × 4pt + 16pt padding ≈ 552 → 600
+    private let menuBaseHeight: CGFloat = 600
 
     // MARK: - Animation
 
@@ -121,6 +137,10 @@ class NotchViewModel: ObservableObject {
     /// Set when the notch is closing due to a click on the notch area,
     /// so the redundant SwiftUI onTapGesture can skip re-opening it.
     var closedByTapAt: Date?
+    /// Suppresses the next mouseDown-triggered close (e.g. for alert buttons 
+    /// that may be positioned outside the panel bounds).
+    var suppressMouseDownClose: Bool = false
+
 
     private enum InstancesPageLayout {
         static let contentSpacing: CGFloat = 8
@@ -251,6 +271,11 @@ class NotchViewModel: ObservableObject {
     }
 
     private func handleMouseDown() {
+        if suppressMouseDownClose {
+            suppressMouseDownClose = false
+            return
+        }
+
         let location = NSEvent.mouseLocation
 
         switch status {
@@ -372,8 +397,12 @@ class NotchViewModel: ObservableObject {
         contentType = .instances
     }
 
-    /// Push a sub-page onto the navigation stack
+    /// Push a sub-page onto the navigation stack.
+    /// If the stack is empty, records the current content type as the base for back navigation.
     func pushTo(_ contentType: NotchContentType) {
+        if navigationStack.isEmpty {
+            navigationStack.append(self.contentType)
+        }
         navigationStack.append(contentType)
         self.contentType = contentType
     }
@@ -386,6 +415,59 @@ class NotchViewModel: ObservableObject {
         }
         navigationStack.removeLast()
         contentType = navigationStack.last ?? .instances
+    }
+
+    /// Select the previous session in the instances list
+    func selectPreviousSession() {
+        guard instancesPageSessionCount > 0 else { return }
+        keyboardSelectedIndex = max(0, keyboardSelectedIndex - 1)
+    }
+
+    /// Select the next session in the instances list
+    func selectNextSession() {
+        guard instancesPageSessionCount > 0 else { return }
+        keyboardSelectedIndex = min(instancesPageSessionCount - 1, keyboardSelectedIndex + 1)
+    }
+
+    /// Activate the currently keyboard-selected session
+    func activateSelectedSession() {
+        keyboardActivateTrigger = UUID()
+    }
+
+    /// Route a shortcut action to the appropriate handler
+    func handleShortcutAction(_ action: ShortcutAction) {
+        switch action {
+        case .toggleNotch:
+            if status == .opened {
+                notchClose()
+            } else {
+                // Clear saved chat to always show instances page
+                currentChatSession = nil
+                notchOpen(reason: .click)
+            }
+        case .toggleChat:
+            if status == .opened {
+                notchClose()
+            } else {
+                // notchOpen() restores currentChatSession if set,
+                // or shows instances if no recent chat
+                notchOpen(reason: .click)
+            }
+        case .closeNotch:
+            notchClose()
+        case .selectPrevious:
+            selectPreviousSession()
+        case .selectNext:
+            selectNextSession()
+        case .enterSession:
+            activateSelectedSession()
+        case .navigateBack:
+            navigateBack()
+        case .openSettings:
+            if contentType != .menu {
+                toggleMenu()
+            }
+        }
     }
 
     /// Perform boot animation: expand briefly then collapse

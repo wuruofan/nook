@@ -13,13 +13,14 @@ struct ShortcutSettingsView: View {
     let primaryTextColor: Color
     let secondaryTextColor: Color
     let separatorColor: Color
-    @StateObject private var store = ShortcutStore.shared
+    @ObservedObject private var store = ShortcutStore.shared
     @State private var recordingAction: ShortcutAction?
-    @State private var showResetConfirmation = false
+    @State private var showResetConfirm = false
     @State private var conflictFlash: ShortcutAction?
+    @State private var isResetHovered = false
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
+        ScrollView(.vertical, showsIndicators: true) {
             VStack(spacing: 4) {
                 // Back button
                 MenuRow(
@@ -33,14 +34,6 @@ struct ShortcutSettingsView: View {
                 Divider()
                     .background(separatorColor)
                     .padding(.vertical, 4)
-
-                // Tip
-                Text("Tap a shortcut to record \u{00B7} Backspace to remove")
-                    .font(.system(size: 11))
-                    .foregroundColor(secondaryTextColor)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 4)
 
                 // Action rows
                 ForEach(ShortcutAction.allCases, id: \.self) { action in
@@ -71,35 +64,87 @@ struct ShortcutSettingsView: View {
                     .background(separatorColor)
                     .padding(.vertical, 4)
 
-                // Reset button
-                Button {
-                    showResetConfirmation = true
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 12))
-                            .foregroundColor(secondaryTextColor)
-                            .frame(width: 16)
+                // Reset row
+                Group {
+                    if showResetConfirm {
+                        HStack(spacing: 10) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 12))
+                                .foregroundColor(Color(red: 1.0, green: 0.4, blue: 0.4))
+                                .frame(width: 16)
 
-                        Text("Restore Defaults")
-                            .font(.system(size: 12))
-                            .foregroundColor(secondaryTextColor)
+                            Text("Reset all shortcuts?")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(Color(red: 1.0, green: 0.4, blue: 0.4))
 
-                        Spacer()
+                            Spacer()
+
+                            Button {
+                                showResetConfirm = false
+                            } label: {
+                                Text("Cancel")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(primaryTextColor.opacity(0.7))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 5)
+                                            .stroke(primaryTextColor.opacity(0.2), lineWidth: 1)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                store.resetToDefaults()
+                                showResetConfirm = false
+                            } label: {
+                                Text("Reset")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 5)
+                                            .fill(Color(red: 1.0, green: 0.4, blue: 0.4))
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    } else {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showResetConfirm = true
+                            }
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "arrow.counterclockwise")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(textColor)
+                                    .frame(width: 16)
+
+                                Text("Restore Defaults")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(textColor)
+
+                                Spacer()
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(isResetHovered ? Color.white.opacity(0.08) : Color.clear)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                        .onHover { isResetHovered = $0 }
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .alert("Restore Default Shortcuts?", isPresented: $showResetConfirmation) {
-                    Button("Cancel", role: .cancel) {}
-                    Button("Restore", role: .destructive) {
-                        store.resetToDefaults()
-                    }
-                } message: {
-                    Text("This will reset all keyboard shortcuts to their default values.")
-                }
+                .animation(.easeInOut(duration: 0.2), value: showResetConfirm)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 8)
@@ -111,6 +156,10 @@ struct ShortcutSettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .shortcutKeyDown)) { notification in
             handleKeyDown(notification)
         }
+    }
+
+    private var textColor: Color {
+        primaryTextColor.opacity(isResetHovered ? 1.0 : 0.82)
     }
 
     private func handleKeyDown(_ notification: Notification) {

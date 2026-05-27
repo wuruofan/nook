@@ -104,7 +104,7 @@ enum ShortcutAction: String, CaseIterable, Codable {
 │  Next Session                  [⌃N] [↓]  │
 │  Open Session                   [Enter]   │
 │  Go Back                         [⌃H]     │
-│  Open Settings                    [⌘,]    │
+│  Open Settings                   [⌥⌘S]   │
 │                                            │
 │  ───────────────────────────────────────── │
 │  Restore Defaults                          │

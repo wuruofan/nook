@@ -76,19 +76,18 @@ class NotchWindowController: NSWindowController {
                         NSApp.activate(ignoringOtherApps: false)
                         notchWindow?.makeKey()
                     }
-                    // Start local keyboard monitor when notch opens
-                    ShortcutManager.shared.startLocalMonitor()
                 case .closed, .popping:
                     // Ignore mouse events when closed so clicks pass through
                     notchWindow?.ignoresMouseEvents = true
-                    // Stop local keyboard monitor when notch closes
-                    ShortcutManager.shared.stopLocalMonitor()
                 }
             }
             .store(in: &cancellables)
 
         // Start with ignoring mouse events (closed state)
         notchWindow.ignoresMouseEvents = true
+
+        // Start local keyboard monitor (stays active regardless of notch state)
+        ShortcutManager.shared.startLocalMonitor()
 
         // Register global hotkey (e.g. ⌥⌘L to open notch)
         ShortcutManager.shared.registerGlobalHotkey()
@@ -105,6 +104,17 @@ class NotchWindowController: NSWindowController {
             } else {
                 self.viewModel.notchOpen(reason: .click)
             }
+        }
+
+        // Listen for local shortcut actions (routed from ShortcutManager)
+        NotificationCenter.default.addObserver(
+            forName: .shortcutAction,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self,
+                  let action = notification.object as? ShortcutAction else { return }
+            self.viewModel.handleShortcutAction(action)
         }
 
         // Perform boot animation after a brief delay (only on initial launch)

@@ -120,9 +120,9 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .enterSession:
             return [KeyCombination(keyCode: 36, flags: ModifierFlagsWrapper(rawValue: 0))] // Enter
         case .navigateBack:
-            return [KeyCombination(keyCode: 11, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.control.rawValue))] // ⌃H (keyCode 11 = H)
+            return [KeyCombination(keyCode: 4, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.control.rawValue))] // ⌃H (keyCode 4 = H)
         case .openSettings:
-            return [KeyCombination(keyCode: 43, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.command.rawValue))] // ⌘, (keyCode 43 = ,)
+            return [KeyCombination(keyCode: 1, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.command.rawValue | NSEvent.ModifierFlags.option.rawValue))] // ⌥⌘S (keyCode 1 = S)
         }
     }
 }

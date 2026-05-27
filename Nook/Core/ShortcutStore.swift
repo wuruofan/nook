@@ -14,7 +14,7 @@ class ShortcutStore: ObservableObject {
 
     @Published var bindings: [ShortcutAction: [KeyCombination]] = [:]
 
-    private let storageKey = "nook_shortcut_bindings"
+    private let storageKey = AppSettings.shortcutsKey
 
     private init() {
         load()

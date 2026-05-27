@@ -28,7 +28,7 @@ struct NotchMenuView: View {
     var body: some View {
         // ScrollView so the menu gracefully scrolls when content exceeds the
         // panel height (e.g. both picker rows expanded on a small panel).
-        ScrollView(.vertical, showsIndicators: false) {
+        ScrollView(.vertical, showsIndicators: true) {
             VStack(spacing: 4) {
                 // Back button
                 MenuRow(

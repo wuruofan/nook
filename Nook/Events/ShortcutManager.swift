@@ -138,9 +138,7 @@ class ShortcutManager {
     private func subscribeToStoreChanges() {
         ShortcutStore.shared.$bindings
             .sink { [weak self] _ in
-                DispatchQueue.main.async {
-                    self?.registerGlobalHotkey()
-                }
+                self?.registerGlobalHotkey()
             }
             .store(in: &cancellables)
     }
