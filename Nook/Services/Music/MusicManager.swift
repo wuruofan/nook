@@ -90,6 +90,10 @@ final class MusicManager: ObservableObject {
     func nextTrack() { controller.nextTrack() }
     func previousTrack() { controller.previousTrack() }
     func openSourceApp() { controller.openSourceApp() }
+    /// MRMediaRemoteSetElapsedTime returns false on macOS 15.6+.
+    /// The adapter reports exit code 1 — system-level API failure, not app-specific.
+    /// See NowPlayingController for details.
+    func seekTo(_ time: TimeInterval) {}
 
     private func resolveSourceApp(bundleIdentifier: String?) -> SourceApp? {
         let trimmedBundleIdentifier = bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines)

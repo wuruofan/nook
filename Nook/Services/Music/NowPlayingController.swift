@@ -93,6 +93,17 @@ extension NowPlayingController {
             configuration: configuration
         ) { _, _ in }
     }
+
+    // MARK: - seekTo (Disabled)
+    //
+    // MRMediaRemoteSetElapsedTime returns false on macOS 15.6+ (confirmed via
+    // adapter binary disassembly — the C function itself fails at the system
+    // level). This is not an entitlement issue; sendCommand (which uses
+    // MRMediaRemoteSendCommand) works fine through the same Perl process.
+    //
+    // Potential alternatives if Apple ever fixes this:
+    //   positionUs = Int(time * 1_000_000)
+    //   runAdapter(arguments: ["seek", String(positionUs)], context: "seek")
 }
 
 private extension NowPlayingController {

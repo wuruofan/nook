@@ -28,9 +28,27 @@ struct MusicCardView: View {
 
                 TimelineView(.animation(minimumInterval: musicManager.playbackState.isPlaying ? 0.2 : 1.0)) { timeline in
                     let elapsedTime = displayedElapsedTime(at: timeline.date)
+                    let fraction = progressFraction(for: elapsedTime)
 
-                    ProgressView(value: progressFraction(for: elapsedTime))
-                        .tint(Color.white.opacity(0.9))
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 2.5)
+                                .fill(Color.white.opacity(0.15))
+                                .frame(height: 5)
+
+                            RoundedRectangle(cornerRadius: 2.5)
+                                .fill(Color.white.opacity(0.9))
+                                .frame(width: max(0, geo.size.width * fraction), height: 5)
+                        }
+                        .frame(height: 5)
+                        .contentShape(Rectangle())
+                        .onTapGesture { location in
+                            let tapFraction = location.x / geo.size.width
+                            let seekTime = max(0, min(tapFraction, 1)) * musicManager.playbackState.duration
+                            musicManager.seekTo(seekTime)
+                        }
+                    }
+                    .frame(height: 5)
 
                     HStack {
                         Text(formatTime(elapsedTime))
