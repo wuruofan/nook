@@ -2,10 +2,11 @@ import SwiftUI
 
 struct MusicCardView: View {
     @ObservedObject var musicManager: MusicManager
+    @State private var keyMonitor: Any?
 
     var body: some View {
         HStack(spacing: 12) {
-            artworkColumn
+            artworkColumnWithTooltip
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .center, spacing: 12) {
@@ -47,6 +48,46 @@ struct MusicCardView: View {
             RoundedRectangle(cornerRadius: 14)
                 .fill(Color.white.opacity(0.05))
         )
+        .onAppear {
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak musicManager] event in
+                guard let musicManager, musicManager.isVisible else { return event }
+
+                // Space: toggle play/pause (skip if text field has focus)
+                if event.keyCode == 49 {
+                    if let window = event.window,
+                       let responder = window.firstResponder,
+                       responder.isKind(of: NSTextView.self) || responder.isKind(of: NSTextField.self) {
+                        return event
+                    }
+                    musicManager.togglePlayPause()
+                    return nil
+                }
+
+                // ⌃⌘ left/right arrows
+                let relevantFlags = event.modifierFlags.intersection([.command, .control, .option, .shift])
+                if relevantFlags == [.command, .control] {
+                    switch event.keyCode {
+                    case 123: musicManager.previousTrack(); return nil
+                    case 124: musicManager.nextTrack(); return nil
+                    default: break
+                    }
+                }
+
+                // ⌃O: open music app
+                if relevantFlags == .control && event.keyCode == 31 {
+                    musicManager.openSourceApp()
+                    return nil
+                }
+
+                return event
+            }
+        }
+        .onDisappear {
+            if let monitor = keyMonitor {
+                NSEvent.removeMonitor(monitor)
+                keyMonitor = nil
+            }
+        }
     }
 }
 
@@ -115,19 +156,33 @@ private extension MusicCardView {
         .buttonStyle(.plain)
     }
 
+    private var artworkColumnWithTooltip: some View {
+        artworkColumn
+            .shortcutTooltip("⌃O")
+    }
+
     var controlsRow: some View {
         HStack(spacing: 10) {
-            transportButton(systemName: "backward.fill", action: musicManager.previousTrack)
-
-            transportButton(
-                systemName: musicManager.playbackState.isPlaying ? "pause.fill" : "play.fill",
-                action: {
-                    musicManager.togglePlayPause(displayedTime: displayedElapsedTime(at: Date()))
-                },
-                isPrimary: true
+            TransportButton(
+                systemName: "backward.fill",
+                shortcut: "⌃⌘←",
+                action: musicManager.previousTrack
             )
 
-            transportButton(systemName: "forward.fill", action: musicManager.nextTrack)
+            TransportButton(
+                systemName: musicManager.playbackState.isPlaying ? "pause.fill" : "play.fill",
+                shortcut: "Space",
+                isPrimary: true,
+                action: {
+                    musicManager.togglePlayPause(displayedTime: displayedElapsedTime(at: Date()))
+                }
+            )
+
+            TransportButton(
+                systemName: "forward.fill",
+                shortcut: "⌃⌘→",
+                action: musicManager.nextTrack
+            )
         }
     }
 
@@ -162,9 +217,76 @@ private extension MusicCardView {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
+}
 
-    @ViewBuilder
-    func transportButton(systemName: String, action: @escaping () -> Void, isPrimary: Bool = false) -> some View {
+// MARK: - Shortcut Tooltip
+
+private struct ShortcutTooltip: ViewModifier {
+    let shortcut: String?
+
+    @State private var showTooltip = false
+    @State private var hoverTask: DispatchWorkItem?
+    @State private var hoverPoint: CGPoint = .zero
+
+    func body(content: Content) -> some View {
+        if let shortcut {
+            content
+                .overlay(alignment: .topLeading) {
+                    if showTooltip {
+                        Text(shortcut)
+                            .fixedSize()
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(Color.black.opacity(0.65))
+                            )
+                            .offset(x: hoverPoint.x, y: hoverPoint.y + 16)
+                    }
+                }
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let point):
+                        hoverPoint = point
+                        hoverTask?.cancel()
+                        let task = DispatchWorkItem {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                showTooltip = true
+                            }
+                        }
+                        hoverTask = task
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: task)
+                    case .ended:
+                        hoverTask?.cancel()
+                        hoverTask = nil
+                        withAnimation(.easeInOut(duration: 0.1)) {
+                            showTooltip = false
+                        }
+                    }
+                }
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func shortcutTooltip(_ shortcut: String) -> some View {
+        modifier(ShortcutTooltip(shortcut: shortcut))
+    }
+}
+
+// MARK: - Transport Button
+
+private struct TransportButton: View {
+    let systemName: String
+    let shortcut: String?
+    var isPrimary = false
+    let action: () -> Void
+
+    var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: isPrimary ? 13 : 11, weight: .semibold))
@@ -176,5 +298,6 @@ private extension MusicCardView {
                 )
         }
         .buttonStyle(.plain)
+        .modifier(ShortcutTooltip(shortcut: shortcut))
     }
 }
