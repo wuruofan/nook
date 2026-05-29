@@ -11,8 +11,8 @@ import SwiftUI
 
 // Corner radius constants
 private let cornerRadiusInsets = (
-    opened: (top: CGFloat(19), bottom: CGFloat(24)),
-    closed: (top: CGFloat(6), bottom: CGFloat(14))
+    opened: (top: CGFloat(12), bottom: CGFloat(24)),
+    closed: (top: CGFloat(6), bottom: CGFloat(12))
 )
 
 struct NotchView: View {
@@ -82,8 +82,11 @@ struct NotchView: View {
 
     /// Extra width for expanding activities (like Dynamic Island)
     private var expansionWidth: CGFloat {
+        // Base expansion: two side icon areas (each = sideWidth)
+        let baseExpansion = 2 * max(0, closedNotchSize.height - 12) + 20
+
         if showMusicActivity {
-            return max(56, closedNotchSize.height * 1.8)
+            return baseExpansion
         }
 
         // Permission indicator adds width on left side only
@@ -92,12 +95,8 @@ struct NotchView: View {
         // Expand for processing activity
         if activityCoordinator.expandingActivity.show {
             switch activityCoordinator.expandingActivity.type {
-            case .claude:
-                let baseWidth = 2 * max(0, closedNotchSize.height - 12) + 20
-                return baseWidth + permissionIndicatorWidth
-            case .codex:
-                let baseWidth = 2 * max(0, closedNotchSize.height - 12) + 20
-                return baseWidth + permissionIndicatorWidth
+            case .claude, .codex:
+                return baseExpansion + permissionIndicatorWidth
             case .none:
                 break
             }
@@ -105,12 +104,12 @@ struct NotchView: View {
 
         // Expand for pending permissions (left indicator) or waiting for input (checkmark on right)
         if hasPendingPermission {
-            return 2 * max(0, closedNotchSize.height - 12) + 20 + permissionIndicatorWidth
+            return baseExpansion + permissionIndicatorWidth
         }
 
         // Waiting for input just shows checkmark on right, no extra left indicator
         if hasWaitingForInput {
-            return 2 * max(0, closedNotchSize.height - 12) + 20
+            return baseExpansion
         }
 
         return 0
@@ -133,22 +132,11 @@ struct NotchView: View {
     // MARK: - Corner Radii
 
     private var topCornerRadius: CGFloat {
-        viewModel.status == .opened
-            ? cornerRadiusInsets.opened.top
-            : cornerRadiusInsets.closed.top
+        viewModel.animatedTopCornerRadius
     }
 
     private var bottomCornerRadius: CGFloat {
-        viewModel.status == .opened
-            ? cornerRadiusInsets.opened.bottom
-            : cornerRadiusInsets.closed.bottom
-    }
-
-    private var currentNotchShape: NotchShape {
-        NotchShape(
-            topCornerRadius: topCornerRadius,
-            bottomCornerRadius: bottomCornerRadius
-        )
+        viewModel.animatedBottomCornerRadius
     }
 
     // Animation springs
@@ -175,9 +163,12 @@ struct NotchView: View {
                     .padding([.horizontal, .bottom], viewModel.status == .opened ? 12 : 0)
                     .background {
                         if isAdaptiveBackgroundEnabled {
-                            ZStack {
-                                expandedNotchTheme.backgroundGradient
-
+                            NotchShape(
+                                topCornerRadius: viewModel.animatedTopCornerRadius,
+                                bottomCornerRadius: viewModel.animatedBottomCornerRadius
+                            )
+                            .fill(expandedNotchTheme.backgroundGradient)
+                            .overlay(
                                 RadialGradient(
                                     colors: [
                                         expandedNotchTheme.primaryText.opacity(0.08),
@@ -187,20 +178,25 @@ struct NotchView: View {
                                     startRadius: 12,
                                     endRadius: notchSize.width * 0.9
                                 )
-
-                                expandedNotchTheme.overlayColor
-                            }
+                            )
+                            .overlay(expandedNotchTheme.overlayColor)
+                            .clipShape(NotchShape(
+                                topCornerRadius: viewModel.animatedTopCornerRadius,
+                                bottomCornerRadius: viewModel.animatedBottomCornerRadius
+                            ))
                         } else {
-                            Color.black
+                            NotchShape(
+                                topCornerRadius: viewModel.animatedTopCornerRadius,
+                                bottomCornerRadius: viewModel.animatedBottomCornerRadius
+                            )
+                            .fill(Color.black)
                         }
                     }
-                    .clipShape(currentNotchShape)
-                    .overlay(alignment: .top) {
-                        Rectangle()
-                            .fill(viewModel.status == .opened && isAdaptiveBackgroundEnabled ? expandedNotchTheme.overlayColor : .black)
-                            .frame(height: 1)
-                            .padding(.horizontal, topCornerRadius)
-                    }
+                    .clipShape(NotchShape(
+                        topCornerRadius: viewModel.animatedTopCornerRadius,
+                        bottomCornerRadius: viewModel.animatedBottomCornerRadius
+                    ))
+                    .overlay(musicEdgeGlow)
                     .shadow(
                         color: (viewModel.status == .opened || isHovering) ? .black.opacity(0.7) : .clear,
                         radius: 6
@@ -210,8 +206,8 @@ struct NotchView: View {
                         maxHeight: viewModel.status == .opened ? notchSize.height : nil,
                         alignment: .top
                     )
-                    .animation(viewModel.status == .opened ? openAnimation : closeAnimation, value: viewModel.status)
                     .animation(openAnimation, value: notchSize) // Animate container size changes between content types
+                    .animation(viewModel.status == .opened ? openAnimation : closeAnimation, value: viewModel.status)
                     .animation(.smooth, value: activityCoordinator.expandingActivity)
                     .animation(.smooth, value: hasPendingPermission)
                     .animation(.smooth, value: hasWaitingForInput)
@@ -226,7 +222,14 @@ struct NotchView: View {
                     }
                     .onTapGesture {
                         if viewModel.status != .opened {
-                            viewModel.notchOpen(reason: .click)
+                            // Don't re-open if we just closed due to clicking the notch area.
+                            // The NSEvent monitor fires first and already handled the close;
+                            // without this guard the SwiftUI gesture would immediately re-open.
+                            if let closedAt = viewModel.closedByTapAt,
+                               Date().timeIntervalSince(closedAt) < 0.2 {
+                                return
+                            }
+                            handleNotchTap()
                         }
                     }
             }
@@ -235,6 +238,7 @@ struct NotchView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .preferredColorScheme(.dark)
         .onAppear {
+            viewModel.closedNotchExpansionWidth = expansionWidth
             sessionMonitor.startMonitoring()
             syncInstancesPageLayoutState()
             handleProcessingChange()
@@ -257,6 +261,9 @@ struct NotchView: View {
         .onChange(of: musicManager.playbackState) { _, _ in
             syncInstancesPageLayoutState()
             handleProcessingChange()
+        }
+        .onChange(of: expansionWidth) { _, newValue in
+            viewModel.closedNotchExpansionWidth = newValue
         }
     }
 
@@ -339,6 +346,48 @@ struct NotchView: View {
         showCompactMusicActivity || isProcessing || hasPendingPermission || hasWaitingForInput
     }
 
+    /// Whether to show the music progress edge glow
+    private var musicEdgeGlowVisible: Bool {
+        musicManager.playbackState.isPlaying
+            && viewModel.status == .closed
+            && musicEdgeGlowEnabled
+    }
+
+    @State private var breathingOpacity: CGFloat = 0.9
+
+    @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
+
+    @ViewBuilder
+    private var musicEdgeGlow: some View {
+        if musicEdgeGlowVisible {
+            let glowColors = musicManager.edgeGlowGradient.map(Color.init(nsColor:))
+            let glowGradient = LinearGradient(colors: glowColors, startPoint: .leading, endPoint: .trailing)
+
+            let edgeShape = NotchBottomEdge(
+                topCornerRadius: viewModel.animatedTopCornerRadius,
+                bottomCornerRadius: viewModel.animatedBottomCornerRadius
+            )
+
+            edgeShape
+                .trim(from: 0, to: 1)
+                .stroke(glowGradient, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                .blur(radius: 6)
+                .opacity(breathingOpacity * 0.75)
+                .task {
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        withAnimation(.easeInOut(duration: 1.5)) {
+                            breathingOpacity = 0.15
+                        }
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        withAnimation(.easeInOut(duration: 1.5)) {
+                            breathingOpacity = 1.0
+                        }
+                    }
+                }
+        }
+    }
+
     @ViewBuilder
     private var notchLayout: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -350,6 +399,7 @@ struct NotchView: View {
             if viewModel.status == .opened {
                 contentView
                     .frame(width: notchSize.width - 24) // Fixed width to prevent reflow
+                    .compositingGroup() // Flatten content before transition effects to prevent layer interleaving artifacts
                     .transition(
                         .asymmetric(
                             insertion: .scale(scale: 0.8, anchor: .top)
@@ -372,65 +422,53 @@ struct NotchView: View {
                 .frame(height: closedNotchSize.height)
         } else {
         HStack(spacing: 0) {
-            // Left side - crab + optional permission indicator (visible when processing, pending, or waiting for input)
+            // Left side - icons at natural size
             if showClosedActivity {
                 HStack(spacing: 4) {
                     if isCodexProcessing {
                         CodexPulseIcon(size: 14, color: activityTint, isAnimating: true)
+                            .padding(1)
                             .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: showClosedActivity)
                     } else {
                         ClaudeCrabIcon(size: 14, color: activityTint, animateLegs: isProcessing)
+                            .padding(1)
                             .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: showClosedActivity)
                     }
 
-                    // Permission indicator only (amber) - waiting for input shows checkmark on right
                     if hasPendingPermission {
                         PermissionIndicatorIcon(size: 14, color: Color(red: 0.85, green: 0.47, blue: 0.34))
+                            .padding(1)
                             .matchedGeometryEffect(id: "status-indicator", in: activityNamespace, isSource: showClosedActivity)
                     }
                 }
-                .frame(width: viewModel.status == .opened ? nil : sideWidth + (hasPendingPermission ? 18 : 0))
-                .padding(.leading, viewModel.status == .opened ? 8 : 0)
             }
 
-            // Center content
+            // Center spacer
             if viewModel.status == .opened {
-                // Opened: show header content
                 openedHeaderContent
             } else if !showClosedActivity {
-                // Closed without activity: empty space
-                Rectangle()
-                    .fill(.clear)
-                    .frame(width: closedNotchSize.width - 20)
+                Spacer()
             } else {
-                // Closed with activity: black spacer (with optional bounce)
-                Rectangle()
-                    .fill(.black)
-                    .frame(width: closedNotchSize.width - cornerRadiusInsets.closed.top + (isBouncing ? 16 : 0))
+                Spacer()
+                    .background(Color.black)
             }
 
-            // Right side - spinner when processing/pending, checkmark when waiting for input
+            // Right side - icons at natural size
             if showClosedActivity {
                 if isProcessing || hasPendingPermission {
                     ProcessingSpinner(provider: activeLoadingProvider)
                         .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showClosedActivity)
-                        .frame(width: viewModel.status == .opened ? 20 : sideWidth)
-                        .padding(.trailing, viewModel.status == .opened ? 0 : 4)
                 } else if hasWaitingForInput {
-                    // Checkmark for waiting-for-input on the right side
                     ReadyForInputIndicatorIcon(size: 14, color: TerminalColors.green)
+                        .padding(1)
                         .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showClosedActivity)
-                        .frame(width: viewModel.status == .opened ? 20 : sideWidth)
-                        .padding(.trailing, viewModel.status == .opened ? 0 : 4)
                 }
             }
         }
+        .padding(.horizontal, 7)
+        .frame(width: viewModel.status == .opened ? nil : closedContentWidth + (isBouncing ? 16 : 0))
         .frame(height: closedNotchSize.height)
         }
-    }
-
-    private var sideWidth: CGFloat {
-        max(0, closedNotchSize.height - 12) + 10
     }
 
     // MARK: - Opened Header Content
@@ -502,6 +540,13 @@ struct NotchView: View {
                     secondaryTextColor: expandedSecondaryTextColor,
                     separatorColor: expandedSeparatorColor
                 )
+            case .shortcuts:
+                ShortcutSettingsView(
+                    viewModel: viewModel,
+                    primaryTextColor: expandedPrimaryTextColor,
+                    secondaryTextColor: expandedSecondaryTextColor,
+                    separatorColor: expandedSeparatorColor
+                )
             case .chat(let session):
                 ChatView(
                     sessionId: session.sessionId,
@@ -567,6 +612,10 @@ struct NotchView: View {
                 }
             }
         }
+    }
+
+    private func handleNotchTap() {
+        viewModel.handleNotchTap()
     }
 
     private func handleStatusChange(from oldStatus: NotchStatus, to newStatus: NotchStatus) {

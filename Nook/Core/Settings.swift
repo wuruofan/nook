@@ -34,6 +34,8 @@ enum NotificationSound: String, CaseIterable {
 enum AppSettings {
     private nonisolated(unsafe) static let defaults = UserDefaults.standard
     nonisolated static let artworkAdaptiveBackgroundEnabledKey = "artworkAdaptiveBackgroundEnabled"
+    nonisolated static let musicEdgeGlowEnabledKey = "musicEdgeGlowEnabled"
+    nonisolated static let shortcutsKey = "nook_shortcut_bindings"
 
     // MARK: - Keys
 
@@ -41,11 +43,13 @@ enum AppSettings {
         nonisolated static let notificationSound = "notificationSound"
         nonisolated static let claudeDirectoryName = "claudeDirectoryName"
         nonisolated static let artworkAdaptiveBackgroundEnabled = AppSettings.artworkAdaptiveBackgroundEnabledKey
+        nonisolated static let musicEdgeGlowEnabled = AppSettings.musicEdgeGlowEnabledKey
     }
 
     nonisolated static func registerDefaults() {
         defaults.register(defaults: [
-            Keys.artworkAdaptiveBackgroundEnabled: true
+            Keys.artworkAdaptiveBackgroundEnabled: true,
+            Keys.musicEdgeGlowEnabled: true
         ])
     }
 
@@ -93,6 +97,22 @@ enum AppSettings {
         }
         set {
             defaults.set(newValue, forKey: Keys.artworkAdaptiveBackgroundEnabled)
+        }
+    }
+
+    // MARK: - Music Edge Glow
+
+    /// Controls whether the breathing edge glow is shown when music is playing.
+    /// Defaults to enabled.
+    nonisolated static var musicEdgeGlowEnabled: Bool {
+        get {
+            if defaults.object(forKey: Keys.musicEdgeGlowEnabled) == nil {
+                return true
+            }
+            return defaults.bool(forKey: Keys.musicEdgeGlowEnabled)
+        }
+        set {
+            defaults.set(newValue, forKey: Keys.musicEdgeGlowEnabled)
         }
     }
 }

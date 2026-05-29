@@ -2,10 +2,11 @@ import SwiftUI
 
 struct MusicCardView: View {
     @ObservedObject var musicManager: MusicManager
+    @State private var keyMonitor: Any?
 
     var body: some View {
         HStack(spacing: 12) {
-            artworkColumn
+            artworkColumnWithTooltip
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .center, spacing: 12) {
@@ -27,9 +28,27 @@ struct MusicCardView: View {
 
                 TimelineView(.animation(minimumInterval: musicManager.playbackState.isPlaying ? 0.2 : 1.0)) { timeline in
                     let elapsedTime = displayedElapsedTime(at: timeline.date)
+                    let fraction = progressFraction(for: elapsedTime)
 
-                    ProgressView(value: progressFraction(for: elapsedTime))
-                        .tint(Color.white.opacity(0.9))
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 2.5)
+                                .fill(Color.white.opacity(0.15))
+                                .frame(height: 5)
+
+                            RoundedRectangle(cornerRadius: 2.5)
+                                .fill(Color.white.opacity(0.9))
+                                .frame(width: max(0, geo.size.width * fraction), height: 5)
+                        }
+                        .frame(height: 5)
+                        .contentShape(Rectangle())
+                        .onTapGesture { location in
+                            let tapFraction = location.x / geo.size.width
+                            let seekTime = max(0, min(tapFraction, 1)) * musicManager.playbackState.duration
+                            musicManager.seekTo(seekTime)
+                        }
+                    }
+                    .frame(height: 5)
 
                     HStack {
                         Text(formatTime(elapsedTime))
@@ -47,6 +66,46 @@ struct MusicCardView: View {
             RoundedRectangle(cornerRadius: 14)
                 .fill(Color.white.opacity(0.05))
         )
+        .onAppear {
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak musicManager] event in
+                guard let musicManager, musicManager.isVisible else { return event }
+
+                // Space: toggle play/pause (skip if text field has focus)
+                if event.keyCode == 49 {
+                    if let window = event.window,
+                       let responder = window.firstResponder,
+                       responder.isKind(of: NSTextView.self) || responder.isKind(of: NSTextField.self) {
+                        return event
+                    }
+                    musicManager.togglePlayPause()
+                    return nil
+                }
+
+                // ⌃⌘ left/right arrows
+                let relevantFlags = event.modifierFlags.intersection([.command, .control, .option, .shift])
+                if relevantFlags == [.command, .control] {
+                    switch event.keyCode {
+                    case 123: musicManager.previousTrack(); return nil
+                    case 124: musicManager.nextTrack(); return nil
+                    default: break
+                    }
+                }
+
+                // ⌃O: open music app
+                if relevantFlags == .control && event.keyCode == 31 {
+                    musicManager.openSourceApp()
+                    return nil
+                }
+
+                return event
+            }
+        }
+        .onDisappear {
+            if let monitor = keyMonitor {
+                NSEvent.removeMonitor(monitor)
+                keyMonitor = nil
+            }
+        }
     }
 }
 
@@ -82,77 +141,66 @@ private extension MusicCardView {
     }
 
     var artworkColumn: some View {
-        VStack(spacing: 6) {
-            artwork
-            sourceBadge
-        }
-        .frame(width: 88)
-    }
-
-    var artwork: some View {
         Button(action: musicManager.openSourceApp) {
-            Group {
-                if let image = musicManager.albumArt {
-                    Image(nsImage: image)
+            ZStack(alignment: .bottomTrailing) {
+                Group {
+                    if let image = musicManager.albumArt {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Image(systemName: musicManager.fallbackSymbolName)
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundColor(.white.opacity(0.75))
+                    }
+                }
+                .frame(width: 76, height: 76)
+                .background(Color.white.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                if let sourceApp = musicManager.sourceApp, let icon = sourceApp.icon {
+                    Image(nsImage: icon)
                         .resizable()
-                        .scaledToFill()
-                } else {
-                    Image(systemName: musicManager.fallbackSymbolName)
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundColor(.white.opacity(0.75))
+                        .scaledToFit()
+                        .frame(width: 16, height: 16)
+                        .padding(3)
+                        .background(Color.black.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .padding(3)
                 }
             }
-            .frame(width: 56, height: 56)
-            .background(Color.white.opacity(0.06))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .frame(width: 76, height: 76)
         }
         .buttonStyle(.plain)
     }
 
-    @ViewBuilder
-    var sourceBadge: some View {
-        if let sourceApp = musicManager.sourceApp {
-            Button(action: musicManager.openSourceApp) {
-                HStack(spacing: 5) {
-                    if let icon = sourceApp.icon {
-                        Image(nsImage: icon)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 12, height: 12)
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
-                    }
-
-                    Text(sourceApp.displayName)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.white.opacity(0.72))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.white.opacity(0.07))
-                )
-            }
-            .buttonStyle(.plain)
-        }
+    private var artworkColumnWithTooltip: some View {
+        artworkColumn
+            .shortcutTooltip("⌃O")
     }
 
     var controlsRow: some View {
         HStack(spacing: 10) {
-            transportButton(systemName: "backward.fill", action: musicManager.previousTrack)
-
-            transportButton(
-                systemName: musicManager.playbackState.isPlaying ? "pause.fill" : "play.fill",
-                action: {
-                    musicManager.togglePlayPause(displayedTime: displayedElapsedTime(at: Date()))
-                },
-                isPrimary: true
+            TransportButton(
+                systemName: "backward.fill",
+                shortcut: "⌃⌘←",
+                action: musicManager.previousTrack
             )
 
-            transportButton(systemName: "forward.fill", action: musicManager.nextTrack)
+            TransportButton(
+                systemName: musicManager.playbackState.isPlaying ? "pause.fill" : "play.fill",
+                shortcut: "Space",
+                isPrimary: true,
+                action: {
+                    musicManager.togglePlayPause(displayedTime: displayedElapsedTime(at: Date()))
+                }
+            )
+
+            TransportButton(
+                systemName: "forward.fill",
+                shortcut: "⌃⌘→",
+                action: musicManager.nextTrack
+            )
         }
     }
 
@@ -187,9 +235,76 @@ private extension MusicCardView {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
+}
 
-    @ViewBuilder
-    func transportButton(systemName: String, action: @escaping () -> Void, isPrimary: Bool = false) -> some View {
+// MARK: - Shortcut Tooltip
+
+private struct ShortcutTooltip: ViewModifier {
+    let shortcut: String?
+
+    @State private var showTooltip = false
+    @State private var hoverTask: DispatchWorkItem?
+    @State private var hoverPoint: CGPoint = .zero
+
+    func body(content: Content) -> some View {
+        if let shortcut {
+            content
+                .overlay(alignment: .topLeading) {
+                    if showTooltip {
+                        Text(shortcut)
+                            .fixedSize()
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(Color.black.opacity(0.65))
+                            )
+                            .offset(x: hoverPoint.x, y: hoverPoint.y + 16)
+                    }
+                }
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let point):
+                        hoverPoint = point
+                        hoverTask?.cancel()
+                        let task = DispatchWorkItem {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                showTooltip = true
+                            }
+                        }
+                        hoverTask = task
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: task)
+                    case .ended:
+                        hoverTask?.cancel()
+                        hoverTask = nil
+                        withAnimation(.easeInOut(duration: 0.1)) {
+                            showTooltip = false
+                        }
+                    }
+                }
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func shortcutTooltip(_ shortcut: String) -> some View {
+        modifier(ShortcutTooltip(shortcut: shortcut))
+    }
+}
+
+// MARK: - Transport Button
+
+private struct TransportButton: View {
+    let systemName: String
+    let shortcut: String?
+    var isPrimary = false
+    let action: () -> Void
+
+    var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: isPrimary ? 13 : 11, weight: .semibold))
@@ -201,5 +316,6 @@ private extension MusicCardView {
                 )
         }
         .buttonStyle(.plain)
+        .modifier(ShortcutTooltip(shortcut: shortcut))
     }
 }

@@ -37,9 +37,14 @@ struct NotchGeometry: Sendable {
         )
     }
 
-    /// Check if a point is in the notch area (with padding for easier interaction)
-    func isPointInNotch(_ point: CGPoint) -> Bool {
-        notchScreenRect.insetBy(dx: -10, dy: -5).contains(point)
+    /// Check if a point is in the notch area (with padding for easier interaction).
+    /// Uses the actual closed notch UI width (device notch + expansion + VStack padding 24pt)
+    /// plus 5pt margin on each side.
+    func isPointInNotch(_ point: CGPoint, expansionWidth: CGFloat = 0) -> Bool {
+        let visibleWidth = deviceNotchRect.width + expansionWidth + 24
+        let x = screenRect.midX - visibleWidth / 2
+        let rect = CGRect(x: x, y: notchScreenRect.origin.y, width: visibleWidth, height: notchScreenRect.height)
+        return rect.insetBy(dx: -5, dy: -5).contains(point)
     }
 
     /// Check if a point is in the opened panel area
