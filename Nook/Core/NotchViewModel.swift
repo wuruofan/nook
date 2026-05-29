@@ -42,6 +42,7 @@ enum NotchContentType: Equatable {
 enum ChatScrollDirection {
     case up
     case down
+    case bottom
 }
 
 @MainActor
@@ -498,8 +499,8 @@ class NotchViewModel: ObservableObject {
 
     /// Total focusable items in the menu page
     let menuItemCount: Int = 12
-    /// Total focusable items in the shortcuts page (Back + 7 visible action rows + Restore)
-    let shortcutsItemCount: Int = 9
+    /// Total focusable items in the shortcuts page (Back + action rows + Restore)
+    var shortcutsItemCount: Int { 1 + ShortcutAction.allCases.count + 1 }
 
     /// Route a shortcut action to the appropriate handler
     func handleShortcutAction(_ action: ShortcutAction) {
@@ -523,6 +524,10 @@ class NotchViewModel: ObservableObject {
         case .openSettings:
             if contentType != .menu {
                 toggleMenu()
+            }
+        case .scrollToBottom:
+            if case .chat = contentType {
+                NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.bottom)
             }
         }
     }

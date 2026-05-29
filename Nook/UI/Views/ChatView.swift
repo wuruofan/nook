@@ -349,11 +349,11 @@ struct ChatView: View {
     }
 
     private var chatInputPlaceholder: String {
-        switch session.provider {
-        case .claude:
-            return canSendMessages ? "Message Claude..." : "Open Claude Code in tmux to enable messaging"
-        case .codex:
-            return canSendMessages ? "Message Codex..." : "Open Codex in tmux to enable messaging"
+        let name = session.provider.displayName
+        if canSendMessages {
+            return "Message to \(name)... (⏎ send · ⌃P/⌃N scroll · ⌃G bottom)"
+        } else {
+            return "Open \(name) in tmux to enable messaging"
         }
     }
 
@@ -594,13 +594,21 @@ struct ChatView: View {
             }
             return
         }
-        let lineHeight: CGFloat = 120
-        let newY = switch direction {
-        case .up: sv.contentView.bounds.origin.y + lineHeight
-        case .down: sv.contentView.bounds.origin.y - lineHeight
+        switch direction {
+        case .bottom:
+            let targetY: CGFloat = 0
+            if abs(sv.contentView.bounds.origin.y - targetY) > 1 {
+                sv.contentView.animator().setBoundsOrigin(NSPoint(x: 0, y: targetY))
+            }
+            resumeAutoscroll()
+        case .up, .down:
+            let lineHeight: CGFloat = 120
+            let newY = direction == .up
+                ? sv.contentView.bounds.origin.y + lineHeight
+                : sv.contentView.bounds.origin.y - lineHeight
+            let maxY = max(0, (sv.documentView?.bounds.height ?? 0) - sv.contentView.bounds.height)
+            sv.contentView.animator().setBoundsOrigin(NSPoint(x: 0, y: min(max(0, newY), maxY)))
         }
-        let maxY = max(0, (sv.documentView?.bounds.height ?? 0) - sv.contentView.bounds.height)
-        sv.contentView.animator().setBoundsOrigin(NSPoint(x: 0, y: min(max(0, newY), maxY)))
     }
 
     /// Recursively find the first NSScrollView in a view hierarchy.
