@@ -162,6 +162,7 @@ struct NotchMenuView: View {
                 MenuRow(
                     icon: "star",
                     label: "Star on GitHub",
+                    trailingLabel: appVersion,
                     primaryTextColor: primaryTextColor,
                     isFocused: viewModel.settingsFocusedIndex == 10
                 ) {
@@ -262,6 +263,11 @@ struct NotchMenuView: View {
         launchAtLogin = SMAppService.mainApp.status == .enabled
         screenSelector.refreshScreens()
     }
+
+    private var appVersion: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        return "v\(version)"
+    }
 }
 
 // MARK: - Update Row
@@ -273,8 +279,7 @@ struct UpdateRow: View {
 
     private var appVersion: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-        return "v\(version) (\(build))"
+        return "v\(version)"
     }
 
     var body: some View {
