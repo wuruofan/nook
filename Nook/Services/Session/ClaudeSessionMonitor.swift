@@ -95,12 +95,30 @@ class ClaudeSessionMonitor: ObservableObject {
                         await SessionStore.shared.process(.opencodeSessionStarted(sessionId: sessionId, cwd: cwd))
                     case .userPromptSubmit(let sessionId, let cwd, let prompt):
                         await SessionStore.shared.process(.opencodePromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: prompt))
-                    case .preBashTool(let sessionId, let cwd, let toolName, let toolUseId, let command):
-                        await SessionStore.shared.process(.opencodeBashStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, command: command))
-                    case .postBashTool(let sessionId, let cwd, let toolName, let toolUseId, let command):
-                        await SessionStore.shared.process(.opencodeBashFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, command: command))
+                    case .processingStarted(let sessionId, let cwd):
+                        await SessionStore.shared.process(.opencodeProcessingStarted(sessionId: sessionId, cwd: cwd))
+                    case .waitingForUserInput(let sessionId, let cwd):
+                        await SessionStore.shared.process(.opencodeWaitingForUserInput(sessionId: sessionId, cwd: cwd))
+                    case .assistantThinking(let sessionId, let cwd, let text):
+                        await SessionStore.shared.process(.opencodeAssistantThinking(sessionId: sessionId, cwd: cwd, text: text))
+                    case .assistantText(let sessionId, let cwd, let text):
+                        await SessionStore.shared.process(.opencodeAssistantText(sessionId: sessionId, cwd: cwd, text: text))
+                    case .preTool(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary):
+                        await SessionStore.shared.process(.opencodeToolStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary))
+                    case .postTool(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary):
+                        await SessionStore.shared.process(.opencodeToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary))
                     case .stop(let sessionId, let cwd):
                         await SessionStore.shared.process(.opencodeStopped(sessionId: sessionId, cwd: cwd))
+                    case .subagentStarted(let sessionId, let taskToolId):
+                        // sessionId is already the parent's — the adapter
+                        // rewrites child session ids before emitting.
+                        await SessionStore.shared.process(.subagentStarted(sessionId: sessionId, taskToolId: taskToolId))
+                    case .subagentToolExecuted(let sessionId, let tool):
+                        await SessionStore.shared.process(.subagentToolExecuted(sessionId: sessionId, tool: tool))
+                    case .subagentToolCompleted(let sessionId, let toolId, let status):
+                        await SessionStore.shared.process(.subagentToolCompleted(sessionId: sessionId, toolId: toolId, status: status))
+                    case .subagentStopped(let sessionId, let taskToolId):
+                        await SessionStore.shared.process(.subagentStopped(sessionId: sessionId, taskToolId: taskToolId))
                     }
                 }
             }

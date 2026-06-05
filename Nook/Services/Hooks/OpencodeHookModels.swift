@@ -26,7 +26,20 @@ struct OpencodeHookEnvelope: Decodable, Sendable {
 enum OpencodeSessionEvent: Sendable {
     case sessionStart(sessionId: String, cwd: String)
     case userPromptSubmit(sessionId: String, cwd: String, prompt: String?)
-    case preBashTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?)
-    case postBashTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?)
+    case processingStarted(sessionId: String, cwd: String)
+    case waitingForUserInput(sessionId: String, cwd: String)
+    case assistantThinking(sessionId: String, cwd: String, text: String)
+    case assistantText(sessionId: String, cwd: String, text: String)
+    case preTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?)
+    case postTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?)
     case stop(sessionId: String, cwd: String)
+    // MARK: - Subagent events
+    // All subagent events are scoped to the PARENT session — the adapter
+    // already rewrites child session ids before emitting these. Subagent
+    // tool events carry the call id from the child's message stream (kept
+    // as the subagent tool id) so postTool status updates can correlate.
+    case subagentStarted(sessionId: String, taskToolId: String)
+    case subagentToolExecuted(sessionId: String, tool: SubagentToolCall)
+    case subagentToolCompleted(sessionId: String, toolId: String, status: ToolStatus)
+    case subagentStopped(sessionId: String, taskToolId: String)
 }
