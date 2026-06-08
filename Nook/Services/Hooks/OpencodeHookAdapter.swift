@@ -42,6 +42,48 @@ final class OpencodeHookAdapter: @unchecked Sendable {
     // MARK: - State
 
     private static var lock = NSLock()
+
+    // TODO(perf): All `private static var` state declared below is
+    // session-scoped (or message-scoped within a session) and is
+    // NEVER cleared when the corresponding session ends. Nook is
+    // typically a long-running menubar app — these maps grow for the
+    // lifetime of the process. Practical impact today is small
+    // (MB-scale at most for power users; correctness is unaffected
+    // because opencode messageIDs are globally unique and not
+    // reused), but it is a strict memory leak and would become a
+    // problem if Nook ever became a system service.
+    //
+    // Cleanup hook: `handleSessionIdle` and the `session.status=idle`
+    // / `session.status=ended` branches in the dispatcher are the
+    // canonical places. On cleanup, drop per-session entries from
+    // the dicts and filter the global Sets through `messageSession`
+    // (or change the Sets to `[sessionId: Set<messageID>]` for O(1)
+    // removal). State to clear, grouped by cleanup strategy:
+    //
+    //   Per-session dicts — single `removeValue(forKey:)`:
+    //     - sessionCwd
+    //     - latestUserMsgID
+    //     - subagentToParent            (key is the child sessionId)
+    //     - subagentTaskToolId          (key is the child sessionId)
+    //     - parentAwaitingTask          (key is the parent sessionId)
+    //
+    //   Message-scoped dicts — filter by `messageSession[messageID]`:
+    //     - pendingTextByMessage
+    //     - pendingReasoningByMessage
+    //     - messageSession              (the reverse map itself)
+    //
+    //   Global Sets keyed by messageID — filter by `messageSession`,
+    //   or convert to per-session dicts for O(1) removal:
+    //     - emittedTextMessages
+    //     - suppressedTextMessages
+    //     - knownReasoningMessageIds
+    //     - emittedReasoningMessages
+    //
+    //   Global Set keyed by callID — no session mapping today;
+    //   tracking `callID → sessionId` is needed before this can be
+    //   cleaned per-session:
+    //     - runningToolCallIds
+
     /// sessionID → cwd from session.created / session.updated
     private static var sessionCwd: [String: String] = [:]
     /// sessionID → messageID of the most recent user message awaiting its text part
