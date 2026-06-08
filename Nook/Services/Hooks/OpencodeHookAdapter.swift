@@ -57,6 +57,16 @@ final class OpencodeHookAdapter: @unchecked Sendable {
     private static var messageSession: [String: String] = [:]
     /// messageIDs whose assistant text has already been emitted as .assistantText
     private static var emittedTextMessages: Set<String> = []
+    /// messageIDs whose assistant text should NEVER be emitted — these are
+    /// the opencode `question` tool's parent messages. The question text is
+    /// the prompt the user already sees in the opencode TUI when answering,
+    /// and is meta-content rather than conversation flow. We mark the
+    /// messageID as suppressed when `question.asked` arrives carrying
+    /// `tool.messageID` (in `handleQuestionAsked` below) so both the
+    /// `finish=stop` flush path and the `flushPendingText` safety net skip
+    /// it. Without this the safety net would emit the question text at the
+    /// END of the next turn — visibly out of order in the chat.
+    private static var suppressedTextMessages: Set<String> = []
     /// messageIDs that have a reasoning part — set as soon as we see
     /// `message.part.updated type=reasoning` (even when the initial text is empty).
     /// Used by `handlePartDelta` to route opencode's `field="text"` reasoning-delta
@@ -353,6 +363,29 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         // answers), so without this explicit signal the notch would keep
         // showing the orange processing indicator while the user is being
         // asked to pick an option.
+        //
+        // The event payload (opencode/src/question/index.ts:35-45, `Request`
+        // schema) also carries `tool: { messageID, callID }` when the
+        // question was invoked as a tool call — messageID is the parent
+        // message whose text is the question prompt. We tag that messageID
+        // as suppressed so its `assistantText` is dropped from the chat
+        // history (the question prompt is meta-content the user already
+        // sees in the opencode TUI; emitting it as chat text would show up
+        // out-of-order at end of next turn). The opencode `question` tool
+        // fires BOTH the standard preTool/postTool lifecycle (which creates
+        // the visible chatItem via SessionStore, with kind=.askUserQuestion)
+        // AND this separate `question.asked` event (the user-input signal).
+        // The `question.asked` payload carries `tool.messageID` for the
+        // parent — that's what we mark here so the parent's `assistantText`
+        // is dropped before the safety-net flush has a chance to emit it.
+        if let tool = props["tool"]?.value as? [String: Any],
+           let messageId = tool["messageID"] as? String,
+           !messageId.isEmpty {
+            lock.lock()
+            suppressedTextMessages.insert(messageId)
+            lock.unlock()
+            Self.logNotice("→ suppressed question parent text session=\(sessionId) messageID=\(messageId)")
+        }
         Self.logNotice("→ waitingForUserInput (question.asked) session=\(sessionId) cwd=\(cwd)")
         return [.waitingForUserInput(sessionId: sessionId, cwd: cwd)]
     }
@@ -575,6 +608,20 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         guard let state = part["state"] as? [String: Any] else { return [] }
         guard let status = state["status"] as? String else { return [] }
 
+        // The opencode `question` tool IS rendered as a chatItem — the user
+        // wants to see the question + answer between the surrounding thinking
+        // blocks (matching opencode TUI behavior). The "red box" bug came
+        // from the *parent message's assistant text* (the model says "OK let
+        // me ask" → tool call → user answers → model continues), not from
+        // the tool chatItem itself. The parent text is suppressed in
+        // `handleQuestionAsked` via `suppressedTextMessages`, NOT here.
+        //
+        // Falling through to the standard preTool / postTool path below lets
+        // SessionStore create a `ToolCallItem(kind: .askUserQuestion)` for
+        // the question with its input (the questions list) and result
+        // ("User has answered your questions: …") — the same shape the user
+        // sees in opencode TUI's "# Questions" block.
+
         let callId = part["callID"] as? String
         let input = state["input"] as? [String: Any]
         let inputSummary = Self.buildInputSummary(toolName: toolName, input: input)
@@ -744,13 +791,23 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         lock.lock()
         let text = pendingTextByMessage.removeValue(forKey: messageId) ?? ""
         let alreadyEmitted = emittedTextMessages.contains(messageId)
-        if !text.isEmpty && !alreadyEmitted {
+        let isSuppressed = suppressedTextMessages.contains(messageId)
+        if !text.isEmpty && !alreadyEmitted && !isSuppressed {
             emittedTextMessages.insert(messageId)
         }
         lock.unlock()
 
         guard !text.isEmpty, !alreadyEmitted else {
             Self.logNotice("→ assistant nothing-to-flush session=\(sessionId) messageID=\(messageId) trigger=\(trigger) textChars=\(text.count) alreadyEmitted=\(alreadyEmitted)")
+            return events
+        }
+        if isSuppressed {
+            // The opencode `question` tool's parent message — its text is the
+            // question prompt the user already saw in the TUI. Drop it here
+            // and let the chat history skip straight from prior content to
+            // the next non-question turn, instead of having the question
+            // appear out of order at the end of the next turn.
+            Self.logNotice("→ assistant text suppressed (question tool parent) session=\(sessionId) messageID=\(messageId) textChars=\(text.count) trigger=\(trigger)")
             return events
         }
         Self.logNotice("→ assistantText session=\(sessionId) messageID=\(messageId) textChars=\(text.count) trigger=\(trigger)")
@@ -805,6 +862,11 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             }
             let text = pendingTextByMessage.removeValue(forKey: messageId) ?? ""
             let textEmitted = emittedTextMessages.contains(messageId)
+            let textSuppressed = suppressedTextMessages.contains(messageId)
+            // Mark the messageID as handled even when we drop it, so a
+            // duplicate safety-net pass can't re-emit it. Without this
+            // bookkeeping the drop path is silently re-evaluated on every
+            // future session.idle and the bookkeeping drifts.
             if !text.isEmpty && !textEmitted {
                 emittedTextMessages.insert(messageId)
             }
@@ -812,12 +874,14 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             lock.unlock()
 
             if !reasoning.isEmpty && !reasoningEmitted {
-                log.notice("→ assistantThinking (safety net) session=\(sessionId) messageID=\(messageId) textChars=\(reasoning.count)")
+                Self.logNotice("→ assistantThinking (safety net) session=\(sessionId) messageID=\(messageId) textChars=\(reasoning.count)")
                 events.append(.assistantThinking(sessionId: sessionId, cwd: cwd, text: reasoning))
             }
-            if !text.isEmpty && !textEmitted {
-                log.notice("→ assistantText (safety net) session=\(sessionId) messageID=\(messageId) textChars=\(text.count)")
+            if !text.isEmpty && !textEmitted && !textSuppressed {
+                Self.logNotice("→ assistantText (safety net) session=\(sessionId) messageID=\(messageId) textChars=\(text.count)")
                 events.append(.assistantText(sessionId: sessionId, cwd: cwd, text: text))
+            } else if !text.isEmpty && textSuppressed {
+                Self.logNotice("→ assistantText suppressed (safety net, question parent) session=\(sessionId) messageID=\(messageId) textChars=\(text.count)")
             }
         }
         return events
