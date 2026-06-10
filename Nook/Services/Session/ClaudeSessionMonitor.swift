@@ -105,8 +105,8 @@ class ClaudeSessionMonitor: ObservableObject {
                         await SessionStore.shared.process(.opencodeAssistantText(sessionId: sessionId, cwd: cwd, text: text))
                     case .preTool(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary):
                         await SessionStore.shared.process(.opencodeToolStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary))
-                    case .postTool(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary):
-                        await SessionStore.shared.process(.opencodeToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary))
+                    case .postTool(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary, let output, let error):
+                        await SessionStore.shared.process(.opencodeToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary, output: output, error: error))
                     case .stop(let sessionId, let cwd):
                         await SessionStore.shared.process(.opencodeStopped(sessionId: sessionId, cwd: cwd))
                     case .subagentStarted(let sessionId, let taskToolId):

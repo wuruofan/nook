@@ -104,8 +104,8 @@ actor SessionStore {
         case .opencodeToolStarted(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary):
             processOpencodeToolStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary)
 
-        case .opencodeToolFinished(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary):
-            processOpencodeToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary)
+        case .opencodeToolFinished(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary, let output, let error):
+            processOpencodeToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary, output: output, error: error)
 
         case .opencodeStopped(let sessionId, let cwd):
             processOpencodeStop(sessionId: sessionId, cwd: cwd)
@@ -548,6 +548,20 @@ actor SessionStore {
         sessions[sessionId] = session
     }
 
+    /// Check whether the bash output ends with the opencode `<bash_metadata>`
+    /// footer (appended for timeout / abort / non-zero with metadata,
+    /// opencode/src/tool/bash.ts:393-398). We only inspect the tail of the
+    /// output because the literal string `<bash_metadata>` can appear in the
+    /// middle of benign output (e.g. `git diff` of code that references it)
+    /// — see #72 in the task list.
+    private nonisolated func tailContainsBashMetadata(_ output: String?) -> Bool? {
+        guard let output, !output.isEmpty else { return false }
+        // 1KB is generous — the footer is ~200 chars in practice. Cheap O(1)
+        // check that avoids scanning megabytes of `cat`-style output.
+        let tail = output.suffix(1024)
+        return tail.contains("<bash_metadata>")
+    }
+
     private func processOpencodeAssistantText(sessionId: String, cwd: String, text: String) {
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
         let now = Date()
@@ -586,6 +600,22 @@ actor SessionStore {
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = now
         session.completionNotificationAt = nil
+        // NOTE: this unconditionally overwrites .waitingForInput to .processing.
+        // If a `question.asked` event from the opencode plugin arrived BEFORE
+        // this `preTool` (ordering between session.status, question.asked, and
+        // preTool is not formally guaranteed across opencode versions), the
+        // .waitingForInput phase set by processOpencodeWaitingForUserInput
+        // gets clobbered here and the user sees the orange processing spinner
+        // instead of the "Answer the question" banner. In practice opencode
+        // v1.15.13+ fires preTool first, so this race has not been observed,
+        // but if a user reports "stuck on processing while question dialog
+        // is open", inspect /tmp/nook-debug.log for the order of
+        //   → processingStarted (session.status=busy)
+        //   → waitingForUserInput (question.asked)
+        //   → toolStarted (preTool ...)
+        // and consider gating this assignment with a canTransition check that
+        // refuses to clobber .waitingForInput. See SessionPhase.swift for the
+        // state machine.
         session.phase = .processing
         session.toolTracker.startTool(id: toolId, name: toolName)
 
@@ -654,16 +684,59 @@ actor SessionStore {
         sessions[sessionId] = session
     }
 
-    private func processOpencodeToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?) {
+    private func processOpencodeToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String? = nil, error: String? = nil) {
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
         let now = Date()
 
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = now
 
+        let toolKind = ToolKind.classify(toolName)
+        let isBash = toolKind == .bash
+        // Bash error detection — two signals:
+        //   1. state.error is non-nil → opencode's ToolStateError path
+        //      (opencode/src/session/message-v2.ts:319-333), e.g. spawn() threw.
+        //   2. state.output ends with "<bash_metadata>…" footer → opencode's
+        //      bash.ts:393-398 appends this footer for timeout / abort / non-zero
+        //      with metadata. The footer is appended at the END of the output,
+        //      so we only check the tail (last 1KB). Checking the entire output
+        //      causes false positives when the bash output happens to contain
+        //      the literal string `<bash_metadata>` (e.g. `git diff` of code
+        //      that references it).
+        // Route A: don't parse the XML; the rendered preview already conveys why.
+        let outputIsError = (error?.isEmpty == false)
+            || (isBash && (tailContainsBashMetadata(output) ?? false))
+        // Prefer output over error when both exist — output is usually the
+        // longer body (stdout/stderr); error is just the exception message.
+        let resultBody: String? = {
+            if let output, !output.isEmpty { return output }
+            if let error, !error.isEmpty { return error }
+            return nil
+        }()
+        let finalStatus: ToolStatus = outputIsError ? .error : .success
+
         if let toolId = latestRunningCodexToolId(in: session, toolName: toolName, toolUseId: toolUseId) {
-            session.toolTracker.completeTool(id: toolId, success: true)
-            updateToolStatus(in: &session, toolId: toolId, status: .success)
+            session.toolTracker.completeTool(id: toolId, success: !outputIsError)
+            updateToolStatus(in: &session, toolId: toolId, status: finalStatus)
+        }
+
+        // Stamp `result` on the toolCall, except on the parent's task container.
+        // canExpand already excludes .task, and subagentTools is what drives the
+        // container's own expansion — leaving `tool.result = nil` there is the
+        // right model. structuredResult intentionally untouched (route A).
+        if let toolUseId, toolKind != .task, let body = resultBody {
+            for i in 0..<session.chatItems.count where session.chatItems[i].id == toolUseId {
+                if case .toolCall(var tool) = session.chatItems[i].type {
+                    tool.status = finalStatus
+                    tool.result = body
+                    session.chatItems[i] = ChatHistoryItem(
+                        id: session.chatItems[i].id,
+                        type: .toolCall(tool),
+                        timestamp: session.chatItems[i].timestamp
+                    )
+                }
+                break
+            }
         }
 
         session.conversationInfo = ConversationInfo(

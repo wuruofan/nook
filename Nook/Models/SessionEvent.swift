@@ -55,7 +55,7 @@ enum SessionEvent: Sendable {
     case opencodeToolStarted(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?)
 
     /// OpenCode finished running a tool
-    case opencodeToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?)
+    case opencodeToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String? = nil, error: String? = nil)
 
     /// OpenCode stopped the current turn
     case opencodeStopped(sessionId: String, cwd: String)
@@ -249,7 +249,7 @@ extension SessionEvent: CustomStringConvertible {
             return "opencodeAssistantText(session: \(sessionId.prefix(8)))"
         case .opencodeToolStarted(let sessionId, _, let toolName, _, _):
             return "opencodeToolStarted(session: \(sessionId.prefix(8)), tool: \(toolName))"
-        case .opencodeToolFinished(let sessionId, _, let toolName, _, _):
+        case .opencodeToolFinished(let sessionId, _, let toolName, _, _, _, _):
             return "opencodeToolFinished(session: \(sessionId.prefix(8)), tool: \(toolName))"
         case .opencodeStopped(let sessionId, _):
             return "opencodeStopped(session: \(sessionId.prefix(8)))"

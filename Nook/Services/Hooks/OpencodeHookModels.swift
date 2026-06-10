@@ -31,7 +31,7 @@ enum OpencodeSessionEvent: Sendable {
     case assistantThinking(sessionId: String, cwd: String, text: String)
     case assistantText(sessionId: String, cwd: String, text: String)
     case preTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?)
-    case postTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?)
+    case postTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String? = nil, error: String? = nil)
     case stop(sessionId: String, cwd: String)
     // MARK: - Subagent events
     // All subagent events are scoped to the PARENT session — the adapter
