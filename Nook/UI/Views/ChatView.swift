@@ -185,6 +185,12 @@ struct ChatView: View {
                 // Always update - the @Published ensures we only get notified on real changes
                 // This allows tool status updates (waitingForApproval -> running) to reflect
                 if countChanged || lastItemChanged || newHistory != history {
+                    // DIAGNOSTIC (#70): dump incoming history to find where second thinking is lost
+                    let newThinkingCount = newHistory.filter { if case .thinking = $0.type { return true } else { return false } }.count
+                    let newThinkingIds = newHistory.compactMap { item -> String? in
+                        if case .thinking = item.type { return item.id } else { return nil }
+                    }
+                    DebugLog.shared.write("[chat-view] history update session=\(sessionId) total=\(newHistory.count) thinkingCount=\(newThinkingCount) thinkingIds=\(newThinkingIds.joined(separator: ","))")
                     // Track new messages when autoscroll is paused
                     if isAutoscrollPaused && newHistory.count > previousHistoryCount {
                         let addedCount = newHistory.count - previousHistoryCount
@@ -944,11 +950,17 @@ struct ToolCallView: View {
         tool.result != nil || tool.structuredResult != nil
     }
 
-    /// Whether the tool can be expanded (has result, NOT a subagent container, NOT Edit).
+    /// Whether the tool can be expanded. Two cases:
+    ///   1. Subagent container with at least one subagent tool → chevron
+    ///      toggles the SubagentToolsList (visibility is also auto-shown
+    ///      while running so the user sees live activity).
+    ///   2. Anything else with a result AND not Edit → chevron toggles
+    ///      ToolResultContent (Edit always shows its diff via showContent).
     /// Uses provider-agnostic kind — opencode emits "edit" lowercase while
     /// Claude emits "Edit" PascalCase.
     private var canExpand: Bool {
-        !tool.isSubagentContainer && tool.kind != .edit && hasResult
+        if tool.isSubagentContainer { return !tool.subagentTools.isEmpty }
+        return tool.kind != .edit && hasResult
     }
 
     private var showContent: Bool {
@@ -1162,8 +1174,10 @@ struct ToolCallView: View {
                 }
             }
 
-            // Subagent tools list (for Task/Agent tools)
-            if tool.isSubagentContainer && !tool.subagentTools.isEmpty {
+            // Subagent tools list (for Task/Agent tools).
+            // Shows during execution regardless of expansion; after completion,
+            // visibility follows isExpanded so the user can collapse to save space.
+            if tool.isSubagentContainer && !tool.subagentTools.isEmpty && (isExpanded || tool.status == .running) {
                 SubagentToolsList(tools: tool.subagentTools, primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor)
                     .padding(.leading, 12)
                     .padding(.top, 2)
@@ -1223,27 +1237,54 @@ struct SubagentToolsList: View {
     let primaryTextColor: Color
     let secondaryTextColor: Color
 
-    /// Number of hidden tools (all except last 2)
-    private var hiddenCount: Int {
-        max(0, tools.count - 2)
+    /// Collapse threshold — show all tools if count is at or below this,
+    /// otherwise show only the most recent and offer a tap-to-expand.
+    /// Previously the list always showed only the last 2 with a
+    /// "+N more tool uses" hint and no way to actually see the rest, which
+    /// left the user with a "can't expand" impression (see #74). Showing
+    /// all tools up to the threshold avoids the implicit two-tier cut and
+    /// makes the "task ran 8 grep calls" outcome actually visible.
+    private let collapseThreshold = 6
+
+    /// Whether the list is currently expanded (only meaningful when
+    /// tools.count > collapseThreshold).
+    @State private var isExpanded: Bool = false
+
+    private var visibleTools: [SubagentToolCall] {
+        if isExpanded || tools.count <= collapseThreshold {
+            return tools
+        }
+        return Array(tools.suffix(2))
     }
 
-    /// Recent tools to show (last 2, regardless of status)
-    private var recentTools: [SubagentToolCall] {
-        Array(tools.suffix(2))
+    private var hiddenCount: Int {
+        max(0, tools.count - visibleTools.count)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // Show count of older hidden tools at top
+            // Show count of hidden tools at top with a tap-to-expand affordance.
+            // When nothing is hidden this branch is skipped entirely.
             if hiddenCount > 0 {
-                Text("+\(hiddenCount) more tool uses")
-                    .font(.system(size: 10))
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 8, weight: .medium))
+                        Text(isExpanded
+                             ? "Hide \(hiddenCount) older tool uses"
+                             : "Show all \(tools.count) tool uses")
+                            .font(.system(size: 10))
+                    }
                     .foregroundColor(secondaryTextColor)
+                }
+                .buttonStyle(.plain)
             }
 
-            // Show last 2 tools (most recent activity)
-            ForEach(recentTools) { tool in
+            ForEach(visibleTools) { tool in
                 SubagentToolRow(tool: tool, primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor)
             }
         }

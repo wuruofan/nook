@@ -529,7 +529,13 @@ actor SessionStore {
 
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = now
-        session.phase = hasRunningTools(in: session) ? .processing : .processing
+        // Mirror processOpencodeAssistantText: tools still in flight → .processing,
+        // pure reasoning with no tool activity → .idle. The previous form
+        // (?: .processing) was a copy-paste typo from the opencode event-stream
+        // commit (6c56af0) that forced .processing even during idle reasoning,
+        // which made the notch keep showing the orange spinner on opencode
+        // sessions that only emitted a thinking block before stopping.
+        session.phase = hasRunningTools(in: session) ? .processing : .idle
         session.completionNotificationAt = nil
         // Thinking always goes BEFORE the matching assistant text. The adapter
         // emits .assistantThinking before .assistantText for the same message
@@ -537,15 +543,32 @@ actor SessionStore {
         // append in arrival order, so the thinking item lands at a lower index
         // than its companion text. Chat view renders in array order, which is
         // what we want.
+        let itemId = "opencode-thinking-\(sessionId)-\(Int(now.timeIntervalSince1970 * 1000))"
         session.chatItems.append(
             ChatHistoryItem(
-                id: "opencode-thinking-\(sessionId)-\(Int(now.timeIntervalSince1970 * 1000))",
+                id: itemId,
                 type: .thinking(trimmedText),
                 timestamp: now
             )
         )
+        // DIAGNOSTIC (#70): dump chatItems state to find where second thinking is lost
+        let thinkingCount = session.chatItems.filter { if case .thinking = $0.type { return true } else { return false } }.count
+        let last3 = session.chatItems.suffix(3).map { "\($0.id)=\(self.typeName($0.type))" }.joined(separator: ", ")
+        DebugLog.shared.write("[session-store] thinking appended session=\(sessionId) itemId=\(itemId) textChars=\(trimmedText.count) totalItems=\(session.chatItems.count) thinkingCount=\(thinkingCount) last3=\(last3)")
 
         sessions[sessionId] = session
+    }
+
+    /// DIAGNOSTIC (#70): helper to label a chatItem type for debug logging
+    private func typeName(_ t: ChatHistoryItemType) -> String {
+        switch t {
+        case .user: return "user"
+        case .assistant: return "assistant"
+        case .toolCall(let tool): return "tool(\(tool.name))"
+        case .thinking: return "thinking"
+        case .image: return "image"
+        case .interrupted: return "interrupted"
+        }
     }
 
     /// Check whether the bash output ends with the opencode `<bash_metadata>`
