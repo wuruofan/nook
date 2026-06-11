@@ -90,10 +90,27 @@ struct ChatView: View {
                     messageList
                 }
 
-                // Approval bar, interactive prompt, or Input bar
-                if let tool = approvalTool {
-                    if tool == "AskUserQuestion" {
-                        // Interactive tools - show prompt to answer in terminal
+                // Bottom bar — provider-agnostic precedence:
+                //   1. .waitingForInput  → opencode ask_user_question
+                //   2. .waitingForApproval with AskUserQuestion → Claude's
+                //      interactive tool prompt
+                //   3. .waitingForApproval with any other tool → permission
+                //      approve/deny bar
+                //   4. else → regular input bar
+                // Unifying cases 1 and 2 onto the same `interactivePromptBar`
+                // so the user sees one consistent "click to focus the
+                // terminal" UX across providers. The top banner that used
+                // to live above the message list for opencode case 1 is
+                // removed in favour of the bottom bar (which sits right
+                // next to the input and is harder to miss).
+                if session.phase == .waitingForInput {
+                    interactivePromptBar
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .bottom)),
+                            removal: .opacity
+                        ))
+                } else if let tool = approvalTool {
+                    if ToolCallItem.kind(of: tool) == .askUserQuestion {
                         interactivePromptBar
                             .transition(.asymmetric(
                                 insertion: .opacity.combined(with: .move(edge: .bottom)),
@@ -113,6 +130,7 @@ struct ChatView: View {
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isWaitingForApproval)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: session.phase)
         .animation(nil, value: viewModel.status)
         .task {
             // Skip if already loaded (prevents redundant work on view recreation)
@@ -140,7 +158,26 @@ struct ChatView: View {
             }
         }
         .onReceive(ChatHistoryManager.shared.$histories) { histories in
-            guard session.provider == .claude else { return }
+            // REGRESSION GUARD — DO NOT change to `== .claude`.
+            //
+            // Codex has its own merged-history path (transcript + live) in the
+            // $instances handler below, so it is excluded here. Claude and
+            // opencode both go through ChatHistoryManager: it subscribes to
+            // SessionStore and rebuilds `histories[sessionId]` for every
+            // provider, so we can drive the chat view straight from it.
+            //
+            // Symptom if regressed: opencode's bash/read/assistant text events
+            // are stored in chatItems (visible after navigating away and back,
+            // and visible in the session list), but the live chat view flickers
+            // once and never re-renders — the user sees a "stuck" view while
+            // the terminal shows fresh activity. This is what bit us in 0.2.0
+            // when the gate was `== .claude`; opencode fell through the same
+            // path as codex and got dropped.
+            //
+            // If you add a new provider here, ask: does it need transcript
+            // merging (codex-style)? If no, leave the gate as `!= .codex`
+            // and the new provider will work automatically.
+            guard session.provider != .codex else { return }
             // Update when count changes, last item differs, or content changes (e.g., tool status)
             if let newHistory = histories[sessionId] {
                 let countChanged = newHistory.count != history.count
@@ -148,6 +185,12 @@ struct ChatView: View {
                 // Always update - the @Published ensures we only get notified on real changes
                 // This allows tool status updates (waitingForApproval -> running) to reflect
                 if countChanged || lastItemChanged || newHistory != history {
+                    // DIAGNOSTIC (#70): dump incoming history to find where second thinking is lost
+                    let newThinkingCount = newHistory.filter { if case .thinking = $0.type { return true } else { return false } }.count
+                    let newThinkingIds = newHistory.compactMap { item -> String? in
+                        if case .thinking = item.type { return item.id } else { return nil }
+                    }
+                    DebugLog.shared.write("[chat-view] history update session=\(sessionId) total=\(newHistory.count) thinkingCount=\(newThinkingCount) thinkingIds=\(newThinkingIds.joined(separator: ","))")
                     // Track new messages when autoscroll is paused
                     if isAutoscrollPaused && newHistory.count > previousHistoryCount {
                         let addedCount = newHistory.count - previousHistoryCount
@@ -349,11 +392,11 @@ struct ChatView: View {
     }
 
     private var chatInputPlaceholder: String {
-        switch session.provider {
-        case .claude:
-            return canSendMessages ? "Message Claude..." : "Open Claude Code in tmux to enable messaging"
-        case .codex:
-            return canSendMessages ? "Message Codex..." : "Open Codex in tmux to enable messaging"
+        let name = session.provider.displayName
+        if canSendMessages {
+            return "Message to \(name)... (⏎ send · ⌃P/⌃N scroll · ⌃G bottom)"
+        } else {
+            return "Open \(name) in tmux to enable messaging"
         }
     }
 
@@ -363,6 +406,8 @@ struct ChatView: View {
             return "Claude Code needs your input"
         case .codex:
             return "Codex needs your input"
+        case .opencode:
+            return "OpenCode needs your input"
         }
     }
 
@@ -399,7 +444,16 @@ struct ChatView: View {
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(spacing: 16) {
+                // Spacing: 10pt between adjacent items. Previous 8pt was OK
+                // for short tool lists but felt cramped once the opencode
+                // sessions started interleaving thinking blocks and 3-5
+                // tool calls in a row — runs of similar-looking tool rows
+                // fused into a single dense block. 12-16pt felt too airy
+                // (subagent tool lists developed visible "empty rows"
+                // between every line). 10pt is a middle ground that gives
+                // each tool row a clear top/bottom edge without breaking
+                // runs apart.
+                LazyVStack(spacing: 10) {
                     // Invisible anchor at bottom (first due to flip)
                     Color.clear
                         .frame(height: 1)
@@ -545,6 +599,7 @@ struct ChatView: View {
         ChatInteractivePromptBar(
             provider: session.provider,
             isInTmux: session.isInTmux,
+            canFocusTerminal: session.isInTmux || session.pid != nil,
             primaryTextColor: primaryTextColor,
             secondaryTextColor: secondaryTextColor,
             onGoToTerminal: { focusTerminal() }
@@ -570,12 +625,59 @@ struct ChatView: View {
 
     private func focusTerminal() {
         Task {
-            if let pid = session.pid {
-                _ = await YabaiController.shared.focusWindow(forClaudePid: pid)
-            } else {
+            // tmux path (Claude's default): the Yabai controller walks
+            // `client_pid → terminal` via tmux's own `list-clients` and
+            // focuses the right pane. Skipped silently if yabai isn't
+            // installed.
+            if session.isInTmux, let pid = session.pid {
+                if await YabaiController.shared.focusWindow(forClaudePid: pid) {
+                    return
+                }
                 _ = await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd)
+                return
+            }
+            // Non-tmux fallback (e.g. opencode running directly in Ghostty).
+            // Yabai focuses whole windows by PID; for a non-tmux shell we
+            // don't have a window handle, only the shell's PID. Walk the
+            // process tree up to the terminal app's PID and activate it
+            // via NSWorkspace — `activate(ignoringOtherApps:)` brings the
+            // terminal to the front so the user can interact with the
+            // opencode question popup.
+            if let pid = session.pid {
+                let activated = await focusTerminalApp(forChildPid: Int(pid))
+                if !activated {
+                    DebugLog.shared.write("[focus] non-tmux focus failed: could not find terminal app for pid=\(pid)")
+                }
             }
         }
+    }
+
+    /// Walk up the process tree from `childPid` until we hit a known
+    /// terminal app process, then activate that app. Returns true if a
+    /// terminal app was found and activated.
+    private func focusTerminalApp(forChildPid childPid: Int) async -> Bool {
+        let tree = ProcessTreeBuilder.shared.buildTree()
+        guard let terminalPid = ProcessTreeBuilder.shared.findTerminalPid(
+            forProcess: childPid, tree: tree
+        ) else {
+            return false
+        }
+        // NSRunningApplication is the only API that gives us `activate`
+        // and survives app-sandbox quirks for already-running processes.
+        // `processIdentifier` matches the PID we just looked up. Note:
+        // `.activateIgnoringOtherApps` is deprecated in macOS 14 (no-op),
+        // so we call `activate()` plain — on macOS 14+ that's enough to
+        // surface the terminal window.
+        guard let app = NSRunningApplication(processIdentifier: pid_t(terminalPid)),
+              let bundleId = app.bundleIdentifier,
+              TerminalAppRegistry.isTerminalBundle(bundleId) else {
+            // Process found but isn't a known terminal app (e.g. parent
+            // is `login` or some other intermediary). Fall through.
+            return false
+        }
+        let activated = app.activate()
+        DebugLog.shared.write("[focus] activated terminal app pid=\(terminalPid) bundleId=\(bundleId) success=\(activated)")
+        return activated
     }
 
     private func approvePermission() {
@@ -594,13 +696,21 @@ struct ChatView: View {
             }
             return
         }
-        let lineHeight: CGFloat = 120
-        let newY = switch direction {
-        case .up: sv.contentView.bounds.origin.y + lineHeight
-        case .down: sv.contentView.bounds.origin.y - lineHeight
+        switch direction {
+        case .bottom:
+            let targetY: CGFloat = 0
+            if abs(sv.contentView.bounds.origin.y - targetY) > 1 {
+                sv.contentView.animator().setBoundsOrigin(NSPoint(x: 0, y: targetY))
+            }
+            resumeAutoscroll()
+        case .up, .down:
+            let lineHeight: CGFloat = 120
+            let newY = direction == .up
+                ? sv.contentView.bounds.origin.y + lineHeight
+                : sv.contentView.bounds.origin.y - lineHeight
+            let maxY = max(0, (sv.documentView?.bounds.height ?? 0) - sv.contentView.bounds.height)
+            sv.contentView.animator().setBoundsOrigin(NSPoint(x: 0, y: min(max(0, newY), maxY)))
         }
-        let maxY = max(0, (sv.documentView?.bounds.height ?? 0) - sv.contentView.bounds.height)
-        sv.contentView.animator().setBoundsOrigin(NSPoint(x: 0, y: min(max(0, newY), maxY)))
     }
 
     /// Recursively find the first NSScrollView in a view hierarchy.
@@ -840,17 +950,25 @@ struct ToolCallView: View {
         tool.result != nil || tool.structuredResult != nil
     }
 
-    /// Whether the tool can be expanded (has result, NOT a subagent container, NOT Edit).
+    /// Whether the tool can be expanded. Two cases:
+    ///   1. Subagent container with at least one subagent tool → chevron
+    ///      toggles the SubagentToolsList (visibility is also auto-shown
+    ///      while running so the user sees live activity).
+    ///   2. Anything else with a result AND not Edit → chevron toggles
+    ///      ToolResultContent (Edit always shows its diff via showContent).
+    /// Uses provider-agnostic kind — opencode emits "edit" lowercase while
+    /// Claude emits "Edit" PascalCase.
     private var canExpand: Bool {
-        !tool.isSubagentContainer && tool.name != "Edit" && hasResult
+        if tool.isSubagentContainer { return !tool.subagentTools.isEmpty }
+        return tool.kind != .edit && hasResult
     }
 
     private var showContent: Bool {
-        tool.name == "Edit" || isExpanded
+        tool.kind == .edit || isExpanded
     }
 
     private var agentDescription: String? {
-        guard tool.name == "AgentOutputTool",
+        guard tool.kind == .agentOutputTool,
               let agentId = tool.input["agentId"],
               let sessionDescriptions = ChatHistoryManager.shared.agentDescriptions[sessionId] else {
             return nil
@@ -877,14 +995,22 @@ struct ToolCallView: View {
                     .foregroundColor(textColor)
                     .fixedSize()
 
-                if tool.isSubagentContainer && !tool.subagentTools.isEmpty {
-                    let taskDesc = tool.input["description"] ?? "Running agent..."
-                    Text("\(taskDesc) (\(tool.subagentTools.count) tools)")
-                        .font(.system(size: 11))
-                        .foregroundColor(textColor.opacity(0.7))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                } else if tool.name == "AgentOutputTool", let desc = agentDescription {
+                if tool.isSubagentContainer {
+                    if !tool.subagentTools.isEmpty {
+                        let taskDesc = tool.input["description"] ?? "Running agent..."
+                        Text("\(taskDesc) (\(tool.subagentTools.count) tools)")
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else if let desc = tool.input["description"] {
+                        Text(desc)
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                } else if tool.kind == .agentOutputTool, let desc = agentDescription {
                     let blocking = tool.input["block"] == "true"
                     Text(blocking ? "Waiting: \(desc)" : desc)
                         .font(.system(size: 11))
@@ -897,12 +1023,143 @@ struct ToolCallView: View {
                         .foregroundColor(textColor.opacity(0.7))
                         .lineLimit(1)
                         .truncationMode(.tail)
+                } else if tool.kind == .bash {
+                    // Bash tools surface the actual command (or summary, for
+                    // subagent-emitted ones) on the same row as the status.
+                    // Without this the row is just "bash Completed" / "bash
+                    // Interrupted" — visually a blank line, and the user
+                    // can't tell which command each row refers to. The
+                    // status (running / success / interrupted) is already
+                    // encoded by the dot color, so we always show the cmd.
+                    //
+                    // Routes via provider-agnostic `kind` — opencode emits
+                    // toolName "bash" (lowercase) while Claude emits
+                    // "Bash" (PascalCase); see `ToolCallItem.kind`.
+                    let rawCommand = tool.input["command"]
+                        ?? tool.input["summary"]
+                        ?? tool.input["description"]
+                    if let cmd = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !cmd.isEmpty {
+                        let firstLine = cmd.components(separatedBy: "\n").first ?? cmd
+                        Text(String(firstLine.prefix(120)))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else {
+                        Text(tool.statusDisplay.text)
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                } else if tool.kind == .read {
+                    // Read tools: opencode's postTool does not carry the
+                    // structured result back (see
+                    // SessionStore.processOpencodeToolFinished), so
+                    // `statusDisplay.text` falls back to a literal
+                    // "Completed" with no filename and no line count.
+                    // The result collapses to a one-line row that is much
+                    // shorter than the surrounding bash rows, which made
+                    // the area after a long bash sequence look like a
+                    // blank/inconsistent-height block. Render the input
+                    // file path the same way bash renders its command so
+                    // heights align.
+                    //
+                    // Path lookup order: `file_path` (Claude) → `path`
+                    // (some adapters) → `command` (opencode: the
+                    // OpencodeHookAdapter's `buildInputSummary` returns
+                    // the file path for read tools, and SessionStore
+                    // stores it under the "command" key for all
+                    // non-task tools).
+                    let rawPath = tool.input["file_path"]
+                        ?? tool.input["path"]
+                        ?? tool.input["command"]
+                    if let path = rawPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !path.isEmpty {
+                        Text(URL(fileURLWithPath: path).lastPathComponent)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    } else {
+                        Text(tool.statusDisplay.text)
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                } else if tool.kind == .grep {
+                    // Grep tools: like read, opencode's postTool doesn't
+                    // carry a structured result, so statusDisplay.text
+                    // would render as a bare "Completed" — visually a
+                    // blank-ish row that breaks the rhythm of the
+                    // surrounding bash/read lines. Surface the pattern
+                    // (or command fallback for opencode) so the user
+                    // can tell which search the row refers to.
+                    //
+                    // Lookup order: `pattern` (Claude) → `path` (the
+                    // search root, secondary signal) → `command`
+                    // (opencode: buildInputSummary returns the pattern
+                    // for grep tools, and SessionStore stores it under
+                    // the "command" key for all non-task tools).
+                    let rawPattern = tool.input["pattern"]
+                        ?? tool.input["command"]
+                    if let pattern = rawPattern?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !pattern.isEmpty {
+                        Text("grep: \(String(pattern.prefix(80)))")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else if let path = tool.input["path"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                              !path.isEmpty {
+                        Text(URL(fileURLWithPath: path).lastPathComponent)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    } else {
+                        Text(tool.statusDisplay.text)
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 } else {
-                    Text(tool.statusDisplay.text)
-                        .font(.system(size: 11))
-                        .foregroundColor(textColor.opacity(0.7))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    // Defensive fallback for any tool that doesn't have an
+                    // explicit branch above (glob, webFetch, webSearch,
+                    // write, edit, askUserQuestion, plan-mode, todoWrite,
+                    // killShell, bashOutput, agentOutputTool without a
+                    // description, unknown MCP tools, etc.). Without this
+                    // those tools would render as a bare "Completed" /
+                    // "Interrupted" — visually a blank one-line row that
+                    // breaks the height rhythm of the surrounding
+                    // messages and creates the "large blank area"
+                    // impression users reported.
+                    //
+                    // `inputPreview` already does a provider-agnostic
+                    // best-effort extraction (file_path → command →
+                    // pattern → query → url → first value), so even
+                    // unrecognised tools get a useful label here. Only
+                    // fall through to statusDisplay when preview is
+                    // empty (e.g. a task with no description and no
+                    // other input).
+                    let preview = tool.inputPreview
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !preview.isEmpty {
+                        Text(preview)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else {
+                        Text(tool.statusDisplay.text)
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 }
 
                 Spacer()
@@ -917,8 +1174,10 @@ struct ToolCallView: View {
                 }
             }
 
-            // Subagent tools list (for Task/Agent tools)
-            if tool.isSubagentContainer && !tool.subagentTools.isEmpty {
+            // Subagent tools list (for Task/Agent tools).
+            // Shows during execution regardless of expansion; after completion,
+            // visibility follows isExpanded so the user can collapse to save space.
+            if tool.isSubagentContainer && !tool.subagentTools.isEmpty && (isExpanded || tool.status == .running) {
                 SubagentToolsList(tools: tool.subagentTools, primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor)
                     .padding(.leading, 12)
                     .padding(.top, 2)
@@ -926,7 +1185,7 @@ struct ToolCallView: View {
 
             // Result content (Edit always shows, others when expanded)
             // Edit tools bypass hasResult check - fallback in ToolResultContent renders from input params
-            if showContent && tool.status != .running && !tool.isSubagentContainer && (hasResult || tool.name == "Edit") {
+            if showContent && tool.status != .running && !tool.isSubagentContainer && (hasResult || tool.kind == .edit) {
                 ToolResultContent(tool: tool)
                     .padding(.leading, 12)
                     .padding(.top, 4)
@@ -934,7 +1193,7 @@ struct ToolCallView: View {
             }
 
             // Edit tools show diff from input even while running
-            if tool.name == "Edit" && tool.status == .running {
+            if tool.kind == .edit && tool.status == .running {
                 EditInputDiffView(input: tool.input)
                     .padding(.leading, 12)
                     .padding(.top, 4)
@@ -978,27 +1237,54 @@ struct SubagentToolsList: View {
     let primaryTextColor: Color
     let secondaryTextColor: Color
 
-    /// Number of hidden tools (all except last 2)
-    private var hiddenCount: Int {
-        max(0, tools.count - 2)
+    /// Collapse threshold — show all tools if count is at or below this,
+    /// otherwise show only the most recent and offer a tap-to-expand.
+    /// Previously the list always showed only the last 2 with a
+    /// "+N more tool uses" hint and no way to actually see the rest, which
+    /// left the user with a "can't expand" impression (see #74). Showing
+    /// all tools up to the threshold avoids the implicit two-tier cut and
+    /// makes the "task ran 8 grep calls" outcome actually visible.
+    private let collapseThreshold = 6
+
+    /// Whether the list is currently expanded (only meaningful when
+    /// tools.count > collapseThreshold).
+    @State private var isExpanded: Bool = false
+
+    private var visibleTools: [SubagentToolCall] {
+        if isExpanded || tools.count <= collapseThreshold {
+            return tools
+        }
+        return Array(tools.suffix(2))
     }
 
-    /// Recent tools to show (last 2, regardless of status)
-    private var recentTools: [SubagentToolCall] {
-        Array(tools.suffix(2))
+    private var hiddenCount: Int {
+        max(0, tools.count - visibleTools.count)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // Show count of older hidden tools at top
+            // Show count of hidden tools at top with a tap-to-expand affordance.
+            // When nothing is hidden this branch is skipped entirely.
             if hiddenCount > 0 {
-                Text("+\(hiddenCount) more tool uses")
-                    .font(.system(size: 10))
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 8, weight: .medium))
+                        Text(isExpanded
+                             ? "Hide \(hiddenCount) older tool uses"
+                             : "Show all \(tools.count) tool uses")
+                            .font(.system(size: 10))
+                    }
                     .foregroundColor(secondaryTextColor)
+                }
+                .buttonStyle(.plain)
             }
 
-            // Show last 2 tools (most recent activity)
-            ForEach(recentTools) { tool in
+            ForEach(visibleTools) { tool in
                 SubagentToolRow(tool: tool, primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor)
             }
         }
@@ -1130,7 +1416,12 @@ struct ThinkingView: View {
                     .frame(width: 6, height: 6)
                     .padding(.top, 4)
 
-                Text(isExpanded ? text : String(text.prefix(80)) + (canExpand ? "..." : ""))
+                let displayText = isExpanded
+                    ? text
+                    : text.trimmingCharacters(in: .whitespacesAndNewlines)
+                Text(isExpanded
+                     ? displayText
+                     : String(displayText.prefix(80)) + (canExpand ? "..." : ""))
                     .font(.system(size: 11))
                     .foregroundColor(secondaryTextColor)
                     .italic()
@@ -1156,7 +1447,11 @@ struct ThinkingView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 2)
+            // No extra vertical padding: when collapsed the HStack is a
+            // single short line, and the 10pt LazyVStack spacing already
+            // gives the row enough breathing room. Adding 2pt here made
+            // the gap between a collapsed thinking and the next tool row
+            // feel larger than the gap between two tool rows.
         }
     }
 }
@@ -1180,6 +1475,13 @@ struct InterruptedMessageView: View {
 struct ChatInteractivePromptBar: View {
     let provider: SessionProvider
     let isInTmux: Bool
+    /// True when the Terminal button click can do something useful.
+    /// Tighter than `isInTmux` alone — also true for non-tmux sessions
+    /// where we have a `session.pid` we can walk up to a terminal app
+    /// (opencode running directly in Ghostty, etc.). Drives both the
+    /// button action and the visual style — we don't want the button
+    /// to look clickable but do nothing, or unclickable but do something.
+    let canFocusTerminal: Bool
     let primaryTextColor: Color
     let secondaryTextColor: Color
     let onGoToTerminal: () -> Void
@@ -1194,19 +1496,38 @@ struct ChatInteractivePromptBar: View {
                 Text(MCPToolFormatter.formatToolName("AskUserQuestion"))
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundColor(TerminalColors.amber)
-                Text(provider == .codex ? "Codex needs your input" : "Claude Code needs your input")
+                Text(providerSubtitle)
                     .font(.system(size: 11))
                     .foregroundColor(secondaryTextColor)
                     .lineLimit(1)
+                if !canFocusTerminal {
+                    Text(hintSubtitle)
+                        .font(.system(size: 10))
+                        .foregroundColor(secondaryTextColor.opacity(0.7))
+                        .lineLimit(1)
+                }
             }
             .opacity(showContent ? 1 : 0)
             .offset(x: showContent ? 0 : -10)
 
             Spacer()
 
-            // Terminal button on right (similar to Allow button)
+            // Terminal button on right (similar to Allow button).
+            //
+            // Visual style and click both follow `canFocusTerminal` rather
+            // than `isInTmux` alone — non-tmux sessions can still have the
+            // click do something useful (focus the terminal app via
+            // NSWorkspace) and we don't want the button to look broken when
+            // the user IS in a session we can focus.
+            //
+            // When `canFocusTerminal` is false, the button is still rendered
+            // (for layout consistency with the in-tmux path) but clicking
+            // is a no-op and a `.help()` tooltip explains the workaround
+            // (start the agent inside tmux). The `interactivePromptSubtitle`
+            // on the left also gains a hint line in that case so the user
+            // sees the explanation without having to hover.
             Button {
-                if isInTmux {
+                if canFocusTerminal {
                     onGoToTerminal()
                 }
             } label: {
@@ -1216,13 +1537,16 @@ struct ChatInteractivePromptBar: View {
                     Text("Terminal")
                         .font(.system(size: 13, weight: .medium))
                 }
-                .foregroundColor(isInTmux ? Color.black.opacity(0.88) : secondaryTextColor)
+                .foregroundColor(canFocusTerminal ? Color.black.opacity(0.88) : secondaryTextColor)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                .background(isInTmux ? primaryTextColor.opacity(0.92) : secondaryTextColor.opacity(0.16))
+                .background(canFocusTerminal ? primaryTextColor.opacity(0.92) : secondaryTextColor.opacity(0.16))
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)
+            .help(canFocusTerminal
+                  ? "Focus the terminal window running \(providerName)"
+                  : "Start \(providerName) inside tmux to focus the terminal from here")
             .opacity(showButton ? 1 : 0)
             .scaleEffect(showButton ? 1 : 0.8)
         }
@@ -1237,6 +1561,37 @@ struct ChatInteractivePromptBar: View {
                 showButton = true
             }
         }
+    }
+
+    /// Provider-aware subtitle. Mirrors `ChatView.interactivePromptSubtitle`
+    /// (lines 397-406) — kept in sync by a comment; consider extracting to a
+    /// shared helper if a third caller appears.
+    private var providerSubtitle: String {
+        switch provider {
+        case .claude: return "Claude Code needs your input"
+        case .codex: return "Codex needs your input"
+        case .opencode: return "OpenCode needs your input"
+        }
+    }
+
+    /// Short agent name used in tooltips ("Focus the terminal window
+    /// running <X>"). Distinct from `providerSubtitle` so the hint copy
+    /// stays terse and free of marketing words like "Code".
+    private var providerName: String {
+        switch provider {
+        case .claude: return "Claude Code"
+        case .codex: return "Codex"
+        case .opencode: return "OpenCode"
+        }
+    }
+
+    /// Shown under the provider subtitle when the Terminal button can't
+    /// focus. Tells the user exactly how to unblock the click — start the
+    /// agent in tmux. We don't try to explain WHY here (the visual story
+    /// is that this pill is dimmed and the tooltip repeats the same
+    /// message); this is the "what to do" half of the hint.
+    private var hintSubtitle: String {
+        "Start \(providerName) in tmux to focus terminal"
     }
 }
 

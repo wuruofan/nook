@@ -31,6 +31,45 @@ enum SessionEvent: Sendable {
     /// Codex stopped the current turn
     case codexStopped(sessionId: String, cwd: String)
 
+    /// An OpenCode session was created or resumed
+    case opencodeSessionStarted(sessionId: String, cwd: String)
+
+    /// OpenCode submitted a user prompt for the current turn
+    case opencodePromptSubmitted(sessionId: String, cwd: String, prompt: String?)
+
+    /// OpenCode session entered a working state (thinking or running a tool)
+    case opencodeProcessingStarted(sessionId: String, cwd: String)
+
+    /// OpenCode is showing an interactive prompt (ask_user_question) and
+    /// waiting for the user to pick an option before the model can continue.
+    case opencodeWaitingForUserInput(sessionId: String, cwd: String)
+
+    /// OpenCode assistant produced reasoning / thinking content (shown as a
+    /// thinking block above the final assistant text in the chat view)
+    case opencodeAssistantThinking(sessionId: String, cwd: String, text: String)
+
+    /// OpenCode assistant produced a text reply (one event per assistant message)
+    case opencodeAssistantText(sessionId: String, cwd: String, text: String)
+
+    /// OpenCode began running a tool (Bash, Read, Write, Edit, etc.)
+    case opencodeToolStarted(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?)
+
+    /// OpenCode finished running a tool
+    case opencodeToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String? = nil, error: String? = nil)
+
+    /// OpenCode stopped the current turn
+    case opencodeStopped(sessionId: String, cwd: String)
+
+    // MARK: - Unified ChatItem Updates (from provider adapters)
+
+    /// A provider adapter produced a chat item operation (insert/update/remove).
+    /// This is the unified entry point that replaces provider-specific cases
+    /// for chat item mutations.
+    case chatItemUpdate(ChatItemUpdate)
+
+    /// A provider adapter produced multiple chat item operations in a batch.
+    case chatItemBatch([ChatItemUpdate])
+
     // MARK: - Permission Events (user actions)
 
     /// User approved a permission request
@@ -159,10 +198,6 @@ extension HookEvent {
             ))
         }
 
-        if event == "Notification" && notificationType == "idle_prompt" {
-            return .idle
-        }
-
         switch status {
         case "waiting_for_input":
             return .waitingForInput
@@ -210,6 +245,24 @@ extension SessionEvent: CustomStringConvertible {
             return "codexBashFinished(session: \(sessionId.prefix(8)), tool: \(toolName))"
         case .codexStopped(let sessionId, _):
             return "codexStopped(session: \(sessionId.prefix(8)))"
+        case .opencodeSessionStarted(let sessionId, _):
+            return "opencodeSessionStarted(session: \(sessionId.prefix(8)))"
+        case .opencodePromptSubmitted(let sessionId, _, _):
+            return "opencodePromptSubmitted(session: \(sessionId.prefix(8)))"
+        case .opencodeProcessingStarted(let sessionId, _):
+            return "opencodeProcessingStarted(session: \(sessionId.prefix(8)))"
+        case .opencodeWaitingForUserInput(let sessionId, _):
+            return "opencodeWaitingForUserInput(session: \(sessionId.prefix(8)))"
+        case .opencodeAssistantThinking(let sessionId, _, _):
+            return "opencodeAssistantThinking(session: \(sessionId.prefix(8)))"
+        case .opencodeAssistantText(let sessionId, _, _):
+            return "opencodeAssistantText(session: \(sessionId.prefix(8)))"
+        case .opencodeToolStarted(let sessionId, _, let toolName, _, _):
+            return "opencodeToolStarted(session: \(sessionId.prefix(8)), tool: \(toolName))"
+        case .opencodeToolFinished(let sessionId, _, let toolName, _, _, _, _):
+            return "opencodeToolFinished(session: \(sessionId.prefix(8)), tool: \(toolName))"
+        case .opencodeStopped(let sessionId, _):
+            return "opencodeStopped(session: \(sessionId.prefix(8)))"
         case .permissionApproved(let sessionId, let toolUseId):
             return "permissionApproved(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)))"
         case .permissionDenied(let sessionId, let toolUseId, _):
@@ -240,6 +293,10 @@ extension SessionEvent: CustomStringConvertible {
             return "subagentStopped(session: \(sessionId.prefix(8)), task: \(taskToolId.prefix(12)))"
         case .agentFileUpdated(let sessionId, let taskToolId, let tools):
             return "agentFileUpdated(session: \(sessionId.prefix(8)), task: \(taskToolId.prefix(12)), tools: \(tools.count))"
+        case .chatItemUpdate(let update):
+            return "chatItemUpdate(session: \(update.sessionId.prefix(8)), id: \(update.id.prefix(16)), mutation: \(update.mutation))"
+        case .chatItemBatch(let updates):
+            return "chatItemBatch(count: \(updates.count))"
         }
     }
 }

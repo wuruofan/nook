@@ -101,9 +101,19 @@ def main():
         state["status"] = "processing"
 
     elif event == "PreToolUse":
-        state["status"] = "running_tool"
-        state["tool"] = data.get("tool_name")
+        tool_name = data.get("tool_name")
+        state["tool"] = tool_name
         state["tool_input"] = tool_input
+        # AskUserQuestion is the only Claude Code tool that puts the
+        # TUI in a real "interactive dialog" state (waiting for the
+        # user to pick an option before the model can continue).
+        # Surface that as `waiting_for_input` so Nook shows the green
+        # speech-bubble and the "Answer the question" banner. Every
+        # other tool stays on `running_tool` (cyan spinner).
+        if tool_name == "AskUserQuestion":
+            state["status"] = "waiting_for_input"
+        else:
+            state["status"] = "running_tool"
         # Send tool_use_id to Swift for caching
         tool_use_id_from_event = data.get("tool_use_id")
         if tool_use_id_from_event:
@@ -184,19 +194,31 @@ def main():
         if notification_type == "permission_prompt":
             sys.exit(0)
         elif notification_type == "idle_prompt":
-            state["status"] = "waiting_for_input"
+            # TUI prompt is showing (user can type next message, plan
+            # mode approval, etc.). This is NOT a real interactive
+            # dialog — that signal is `PreToolUse` for `AskUserQuestion`.
+            # Mark as idle so the chat view does not surface the
+            # "Answer the question" banner.
+            state["status"] = "idle"
         else:
             state["status"] = "notification"
         state["notification_type"] = notification_type
         state["message"] = data.get("message")
 
     elif event == "Stop":
-        state["status"] = "waiting_for_input"
+        # Turn ended. The model may have just printed a text question
+        # in its response, but there is no interactive dialog open
+        # unless `PreToolUse` for `AskUserQuestion` fires. Use `idle`
+        # so the list shows a neutral dot and the chat view does not
+        # surface the dialog banner.
+        state["status"] = "idle"
 
     elif event == "StopFailure":
-        # Turn ended via API error (rate limit, auth, billing). Mark waiting
-        # so the user sees it's done (not stuck), with the error surfaced
-        state["status"] = "waiting_for_input"
+        # Turn ended via API error (rate limit, auth, billing). Mark
+        # idle so the session does not look stuck; the error itself
+        # is surfaced separately via `stop_error` for any UI that
+        # wants to display it.
+        state["status"] = "idle"
         state["stop_error"] = data.get("error") or data.get("message")
 
     elif event == "SubagentStart":
@@ -208,8 +230,9 @@ def main():
         state["status"] = "processing"
 
     elif event == "SessionStart":
-        # New session starts waiting for user input
-        state["status"] = "waiting_for_input"
+        # New session — the TUI prompt is showing for the first
+        # message, but there is no specific "question" to answer.
+        state["status"] = "idle"
 
     elif event == "SessionEnd":
         state["status"] = "ended"

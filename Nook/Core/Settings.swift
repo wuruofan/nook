@@ -44,12 +44,22 @@ enum AppSettings {
         nonisolated static let claudeDirectoryName = "claudeDirectoryName"
         nonisolated static let artworkAdaptiveBackgroundEnabled = AppSettings.artworkAdaptiveBackgroundEnabledKey
         nonisolated static let musicEdgeGlowEnabled = AppSettings.musicEdgeGlowEnabledKey
+        nonisolated static let autoInstallHooks = "autoInstallHooks"
+        nonisolated static let claudeHooksEnabled = "claudeHooksEnabled"
+        nonisolated static let codexHooksEnabled = "codexHooksEnabled"
+        nonisolated static let opencodeHooksEnabled = "opencodeHooksEnabled"
+        nonisolated static let debugLogEnabled = "debugLogEnabled"
     }
 
     nonisolated static func registerDefaults() {
         defaults.register(defaults: [
             Keys.artworkAdaptiveBackgroundEnabled: true,
-            Keys.musicEdgeGlowEnabled: true
+            Keys.musicEdgeGlowEnabled: true,
+            Keys.autoInstallHooks: true,
+            Keys.claudeHooksEnabled: true,
+            Keys.codexHooksEnabled: true,
+            Keys.opencodeHooksEnabled: false,
+            Keys.debugLogEnabled: false,
         ])
     }
 
@@ -114,5 +124,37 @@ enum AppSettings {
         set {
             defaults.set(newValue, forKey: Keys.musicEdgeGlowEnabled)
         }
+    }
+
+    // MARK: - Agent Hooks
+
+    /// Whether to auto-install hooks at launch for agents with hooks enabled.
+    nonisolated static var autoInstallHooks: Bool {
+        get { defaults.bool(forKey: Keys.autoInstallHooks) }
+        set { defaults.set(newValue, forKey: Keys.autoInstallHooks) }
+    }
+
+    nonisolated static var claudeHooksEnabled: Bool {
+        get { defaults.bool(forKey: Keys.claudeHooksEnabled) }
+        set { defaults.set(newValue, forKey: Keys.claudeHooksEnabled) }
+    }
+
+    nonisolated static var codexHooksEnabled: Bool {
+        get { defaults.bool(forKey: Keys.codexHooksEnabled) }
+        set { defaults.set(newValue, forKey: Keys.codexHooksEnabled) }
+    }
+
+    nonisolated static var opencodeHooksEnabled: Bool {
+        get { defaults.bool(forKey: Keys.opencodeHooksEnabled) }
+        set { defaults.set(newValue, forKey: Keys.opencodeHooksEnabled) }
+    }
+
+    /// When true, internal log output is mirrored to
+    /// `/tmp/nook-debug.log` (single 10 MB rolling file, recreated
+    /// on every app launch). Default off; intended as a
+    /// diagnostic toggle for hook/socket issues.
+    nonisolated static var debugLogEnabled: Bool {
+        get { defaults.bool(forKey: Keys.debugLogEnabled) }
+        set { defaults.set(newValue, forKey: Keys.debugLogEnabled) }
     }
 }

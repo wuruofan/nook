@@ -12,6 +12,15 @@ import os.log
 /// Logger for hook socket server
 private let logger = Logger(subsystem: "com.celestial.Nook", category: "Hooks")
 
+/// Mirror to `/tmp/nook-debug.log` when the debug toggle is enabled.
+/// Kept inline (not a member) because the server is a class, not a
+/// static-singleton adapter; the shim just makes it clear at the
+/// call site that this is dual-destination logging.
+private func socketLog(_ message: String) {
+    logger.notice("\(message)")
+    DebugLog.shared.write("[socket] " + message)
+}
+
 /// Event received from Claude Code hooks
 struct HookEvent: Codable, Sendable {
     let sessionId: String
@@ -103,6 +112,13 @@ typealias HookEventHandler = @Sendable (HookEvent) -> Void
 /// Callback for Codex hook events
 typealias CodexHookEventHandler = @Sendable (CodexSessionEvent) -> Void
 
+/// Callback for OpenCode hook events
+typealias OpencodeHookEventHandler = @Sendable (OpencodeSessionEvent) -> Void
+
+/// Callback for OpenCode chat item updates (from OpencodeChatItemAdapter)
+typealias OpencodeChatItemsHandler = @Sendable ([ChatItemUpdate]) -> Void
+
+
 /// Callback for permission response failures (socket died)
 typealias PermissionFailureHandler = @Sendable (_ sessionId: String, _ toolUseId: String) -> Void
 
@@ -116,6 +132,8 @@ class HookSocketServer {
     private var acceptSource: DispatchSourceRead?
     private var eventHandler: HookEventHandler?
     private var codexEventHandler: CodexHookEventHandler?
+    private var opencodeEventHandler: OpencodeHookEventHandler?
+    private var opencodeChatItemsHandler: OpencodeChatItemsHandler?
     private var permissionFailureHandler: PermissionFailureHandler?
     private let queue = DispatchQueue(label: "com.celestial.Nook.socket", qos: .userInitiated)
 
@@ -135,13 +153,17 @@ class HookSocketServer {
     func start(
         onEvent: @escaping HookEventHandler,
         onPermissionFailure: PermissionFailureHandler? = nil,
-        onCodexEvent: CodexHookEventHandler? = nil
+        onCodexEvent: CodexHookEventHandler? = nil,
+        onOpencodeEvent: OpencodeHookEventHandler? = nil,
+        onOpencodeChatItems: OpencodeChatItemsHandler? = nil
     ) {
         queue.async { [weak self] in
             self?.startServer(
                 onEvent: onEvent,
                 onPermissionFailure: onPermissionFailure,
-                onCodexEvent: onCodexEvent
+                onCodexEvent: onCodexEvent,
+                onOpencodeEvent: onOpencodeEvent,
+                onOpencodeChatItems: onOpencodeChatItems
             )
         }
     }
@@ -149,12 +171,16 @@ class HookSocketServer {
     private func startServer(
         onEvent: @escaping HookEventHandler,
         onPermissionFailure: PermissionFailureHandler?,
-        onCodexEvent: CodexHookEventHandler?
+        onCodexEvent: CodexHookEventHandler?,
+        onOpencodeEvent: OpencodeHookEventHandler?,
+        onOpencodeChatItems: OpencodeChatItemsHandler?
     ) {
         guard serverSocket < 0 else { return }
 
         eventHandler = onEvent
         codexEventHandler = onCodexEvent
+        opencodeEventHandler = onOpencodeEvent
+        opencodeChatItemsHandler = onOpencodeChatItems
         permissionFailureHandler = onPermissionFailure
 
         unlink(Self.socketPath)
@@ -200,7 +226,7 @@ class HookSocketServer {
             return
         }
 
-        logger.info("Listening on \(Self.socketPath, privacy: .public)")
+        logger.notice("Listening on \(Self.socketPath)")
 
         acceptSource = DispatchSource.makeReadSource(fileDescriptor: serverSocket, queue: queue)
         acceptSource?.setEventHandler { [weak self] in
@@ -221,6 +247,7 @@ class HookSocketServer {
         acceptSource = nil
         unlink(Self.socketPath)
         codexEventHandler = nil
+        opencodeChatItemsHandler = nil
 
         permissionsLock.lock()
         for (_, pending) in pendingPermissions {
@@ -283,7 +310,7 @@ class HookSocketServer {
         }
         permissionsLock.unlock()
 
-        logger.debug("Tool completed externally, closing socket for \(pending.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public)")
+        logger.debug("Tool completed externally, closing socket for \(pending.sessionId.prefix(8)) tool:\(toolUseId.prefix(12))")
         close(pending.clientSocket)
     }
 
@@ -291,7 +318,7 @@ class HookSocketServer {
         permissionsLock.lock()
         let matching = pendingPermissions.filter { $0.value.sessionId == sessionId }
         for (toolUseId, pending) in matching {
-            logger.debug("Cleaning up stale permission for \(sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public)")
+            logger.debug("Cleaning up stale permission for \(sessionId.prefix(8)) tool:\(toolUseId.prefix(12))")
             close(pending.clientSocket)
             pendingPermissions.removeValue(forKey: toolUseId)
         }
@@ -333,7 +360,7 @@ class HookSocketServer {
         toolUseIdCache[key]?.append(toolUseId)
         cacheLock.unlock()
 
-        logger.debug("Cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .public) id:\(toolUseId.prefix(12), privacy: .public)")
+        logger.debug("Cached tool_use_id for \(event.sessionId.prefix(8)) tool:\(event.tool ?? "?") id:\(toolUseId.prefix(12))")
     }
 
     /// Pop and return cached tool_use_id for PermissionRequest (FIFO)
@@ -355,7 +382,7 @@ class HookSocketServer {
             toolUseIdCache[key] = queue
         }
 
-        logger.debug("Retrieved cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .public) id:\(toolUseId.prefix(12), privacy: .public)")
+        logger.debug("Retrieved cached tool_use_id for \(event.sessionId.prefix(8)) tool:\(event.tool ?? "?") id:\(toolUseId.prefix(12))")
         return toolUseId
     }
 
@@ -369,7 +396,7 @@ class HookSocketServer {
         cacheLock.unlock()
 
         if !keysToRemove.isEmpty {
-            logger.debug("Cleaned up \(keysToRemove.count) cache entries for session \(sessionId.prefix(8), privacy: .public)")
+            logger.debug("Cleaned up \(keysToRemove.count) cache entries for session \(sessionId.prefix(8))")
         }
     }
 
@@ -429,15 +456,43 @@ class HookSocketServer {
 
         case .codex(let event):
             close(clientSocket)
-            logger.debug("Received Codex event: \(String(describing: event), privacy: .public)")
+            logger.debug("Received Codex event: \(String(describing: event))")
             codexEventHandler?(event)
 
         case .unsupportedCodex(let eventName):
             close(clientSocket)
-            logger.debug("Ignoring unsupported Codex event: \(eventName, privacy: .public)")
+            logger.debug("Ignoring unsupported Codex event: \(eventName)")
+
+        case .opencode(let events):
+            close(clientSocket)
+            for event in events {
+                socketLog("Received OpenCode event: \(String(describing: event))")
+                opencodeEventHandler?(event)
+            }
+
+        case .opencodeChatItems(let chatItems, let passthrough):
+            close(clientSocket)
+            // Dispatch chat items FIRST so their Task {} is enqueued
+            // before any passthrough lifecycle events (e.g. stop).
+            // This prevents the race where stop runs before chat items
+            // are applied, which would insert items into an idle session.
+            if !chatItems.isEmpty {
+                opencodeChatItemsHandler?(chatItems)
+            }
+            for event in passthrough {
+                socketLog("Received OpenCode passthrough: \(String(describing: event))")
+                opencodeEventHandler?(event)
+            }
+
+        case .opencodeSkipped(let type):
+            close(clientSocket)
+            // Normal: opencode envelope decoded, but adapter chose not to surface
+            // this event (e.g. session.status busy, step-start, session.diff).
+            logger.debug("OpenCode event skipped by adapter: type=\(type)")
 
         case .unknown:
-            logger.warning("Failed to parse event: \(String(data: data, encoding: .utf8) ?? "?", privacy: .public)")
+            let raw = String(data: data, encoding: .utf8) ?? "?"
+            socketLog("Failed to parse event (raw=\(raw))")
             close(clientSocket)
         }
     }
@@ -445,6 +500,9 @@ class HookSocketServer {
     private enum DecodedHookPayload {
         case claude(HookEvent)
         case codex(CodexSessionEvent)
+        case opencode([OpencodeSessionEvent])
+        case opencodeChatItems([ChatItemUpdate], [OpencodeSessionEvent])
+        case opencodeSkipped(type: String)
         case unsupportedCodex(eventName: String)
         case unknown
     }
@@ -461,11 +519,20 @@ class HookSocketServer {
             return .codex(codexEvent)
         }
 
+        if let opencodeEnvelope = try? JSONDecoder().decode(OpencodeHookEnvelope.self, from: data) {
+            let result = OpencodeChatItemAdapter.shared.adaptAndConvert(opencodeEnvelope)
+            if !result.chatItemUpdates.isEmpty || !result.passthroughEvents.isEmpty {
+                return .opencodeChatItems(result.chatItemUpdates, result.passthroughEvents)
+            }
+            // Envelope decoded fine; adapter just had nothing to surface.
+            return .opencodeSkipped(type: opencodeEnvelope.type)
+        }
+
         return .unknown
     }
 
     private func handleClaudeEvent(_ event: HookEvent, clientSocket: Int32) {
-        logger.debug("Received: \(event.event, privacy: .public) for \(event.sessionId.prefix(8), privacy: .public)")
+        logger.debug("Received: \(event.event) for \(event.sessionId.prefix(8))")
 
         if event.event == "PreToolUse" {
             cacheToolUseId(event: event)
@@ -482,13 +549,13 @@ class HookSocketServer {
             } else if let cachedToolUseId = popCachedToolUseId(event: event) {
                 toolUseId = cachedToolUseId
             } else {
-                logger.warning("Permission request missing tool_use_id for \(event.sessionId.prefix(8), privacy: .public) - no cache hit")
+                logger.warning("Permission request missing tool_use_id for \(event.sessionId.prefix(8)) - no cache hit")
                 close(clientSocket)
                 eventHandler?(event)
                 return
             }
 
-            logger.debug("Permission request - keeping socket open for \(event.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public)")
+            logger.debug("Permission request - keeping socket open for \(event.sessionId.prefix(8)) tool:\(toolUseId.prefix(12))")
 
             let updatedEvent = HookEvent(
                 sessionId: event.sessionId,
@@ -528,7 +595,7 @@ class HookSocketServer {
         permissionsLock.lock()
         guard let pending = pendingPermissions.removeValue(forKey: toolUseId) else {
             permissionsLock.unlock()
-            logger.debug("No pending permission for toolUseId: \(toolUseId.prefix(12), privacy: .public)")
+            logger.debug("No pending permission for toolUseId: \(toolUseId.prefix(12))")
             return
         }
         permissionsLock.unlock()
@@ -540,7 +607,7 @@ class HookSocketServer {
         }
 
         let age = Date().timeIntervalSince(pending.receivedAt)
-        logger.info("Sending response: \(decision, privacy: .public) for \(pending.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public) (age: \(String(format: "%.1f", age), privacy: .public)s)")
+        logger.notice("Sending response: \(decision) for \(pending.sessionId.prefix(8)) tool:\(toolUseId.prefix(12)) (age: \(String(format: "%.1f", age))s)")
 
         data.withUnsafeBytes { bytes in
             guard let baseAddress = bytes.baseAddress else {
@@ -567,7 +634,7 @@ class HookSocketServer {
 
         guard let pending = matchingPending else {
             permissionsLock.unlock()
-            logger.debug("No pending permission for session: \(sessionId.prefix(8), privacy: .public)")
+            logger.debug("No pending permission for session: \(sessionId.prefix(8))")
             return
         }
 
@@ -582,7 +649,7 @@ class HookSocketServer {
         }
 
         let age = Date().timeIntervalSince(pending.receivedAt)
-        logger.info("Sending response: \(decision, privacy: .public) for \(sessionId.prefix(8), privacy: .public) tool:\(pending.toolUseId.prefix(12), privacy: .public) (age: \(String(format: "%.1f", age), privacy: .public)s)")
+        logger.notice("Sending response: \(decision) for \(sessionId.prefix(8)) tool:\(pending.toolUseId.prefix(12)) (age: \(String(format: "%.1f", age))s)")
 
         var writeSuccess = false
         data.withUnsafeBytes { bytes in

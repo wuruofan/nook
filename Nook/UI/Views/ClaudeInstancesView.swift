@@ -312,6 +312,8 @@ struct InstanceRow: View {
             return Color(red: 0.98, green: 0.82, blue: 0.62)
         case .codex:
             return Color(red: 0.80, green: 0.90, blue: 0.98)
+        case .opencode:
+            return Color(red: 0.72, green: 0.95, blue: 0.72)
         }
     }
 
@@ -321,6 +323,8 @@ struct InstanceRow: View {
             return Color(red: 0.85, green: 0.47, blue: 0.34).opacity(0.28)
         case .codex:
             return Color(red: 0.50, green: 0.60, blue: 0.66).opacity(0.40)
+        case .opencode:
+            return Color(red: 0.40, green: 0.80, blue: 0.40).opacity(0.28)
         }
     }
 
@@ -332,7 +336,7 @@ struct InstanceRow: View {
     /// Whether the pending tool requires interactive input (not just approve/deny)
     private var isInteractiveTool: Bool {
         guard let toolName = session.pendingToolName else { return false }
-        return toolName == "AskUserQuestion"
+        return ToolCallItem.kind(of: toolName) == .askUserQuestion
     }
 
     /// Status text based on session phase (fallback when no other content)
@@ -535,9 +539,10 @@ struct InstanceRow: View {
         case .waitingForApproval:
             ProcessingSpinner(color: TerminalColors.amber)
         case .waitingForInput:
-            Circle()
-                .fill(TerminalColors.green)
-                .frame(width: 6, height: 6)
+            // Pixel speech bubble (12×12) — visually distinct from the
+            // 6×6 idle dot, matches the opencode ask_user_question /
+            // Claude Code "Ready for input" state semantically.
+            WaitingForInputIcon(size: 12)
         case .idle, .ended:
             Circle()
                 .fill(Color.white.opacity(0.2))

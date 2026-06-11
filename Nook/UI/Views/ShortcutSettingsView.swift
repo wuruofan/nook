@@ -70,7 +70,7 @@ struct ShortcutSettingsView: View {
                 // Reset row
                 Group {
                     if showResetConfirm {
-                        let isFocus = viewModel.settingsFocusedIndex == 8
+                        let isFocus = viewModel.settingsFocusedIndex == 9
                         HStack(spacing: 10) {
                             Image(systemName: "exclamationmark.triangle")
                                 .font(.system(size: 12))
@@ -126,7 +126,7 @@ struct ShortcutSettingsView: View {
                         )
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                     } else {
-                        let isFocus = viewModel.settingsFocusedIndex == 8
+                        let isFocus = viewModel.settingsFocusedIndex == 9
                         Button {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 showResetConfirm = true

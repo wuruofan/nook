@@ -626,7 +626,8 @@ actor ConversationParser {
                             blocks.append(.toolUse(toolBlock))
                         }
                     case "thinking":
-                        if let thinking = block["thinking"] as? String {
+                        if let thinking = block["thinking"] as? String,
+                           !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             blocks.append(.thinking(thinking))
                         }
                     case "image":

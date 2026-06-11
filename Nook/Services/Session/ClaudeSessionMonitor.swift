@@ -87,6 +87,44 @@ class ClaudeSessionMonitor: ObservableObject {
                         await SessionStore.shared.process(.codexStopped(sessionId: sessionId, cwd: cwd))
                     }
                 }
+            },
+            onOpencodeEvent: { event in
+                // Passthrough events only — session lifecycle + subagent.
+                // Chat-item events are handled via onOpencodeChatItems below.
+                Task {
+                    switch event {
+                    case .sessionStart(let sessionId, let cwd):
+                        await SessionStore.shared.process(.opencodeSessionStarted(sessionId: sessionId, cwd: cwd))
+                    case .processingStarted(let sessionId, let cwd):
+                        await SessionStore.shared.process(.opencodeProcessingStarted(sessionId: sessionId, cwd: cwd))
+                    case .waitingForUserInput(let sessionId, let cwd):
+                        await SessionStore.shared.process(.opencodeWaitingForUserInput(sessionId: sessionId, cwd: cwd))
+                    case .stop(let sessionId, let cwd):
+                        OpencodeChatItemAdapter.shared.clearSession(sessionId)
+                        await SessionStore.shared.process(.opencodeStopped(sessionId: sessionId, cwd: cwd))
+                    case .subagentStarted(let sessionId, let taskToolId):
+                        // sessionId is already the parent's — the adapter
+                        // rewrites child session ids before emitting.
+                        await SessionStore.shared.process(.subagentStarted(sessionId: sessionId, taskToolId: taskToolId))
+                    case .subagentToolExecuted(let sessionId, let tool):
+                        await SessionStore.shared.process(.subagentToolExecuted(sessionId: sessionId, tool: tool))
+                    case .subagentToolCompleted(let sessionId, let toolId, let status):
+                        await SessionStore.shared.process(.subagentToolCompleted(sessionId: sessionId, toolId: toolId, status: status))
+                    case .subagentStopped(let sessionId, let taskToolId):
+                        await SessionStore.shared.process(.subagentStopped(sessionId: sessionId, taskToolId: taskToolId))
+                    case .userPromptSubmitted, .assistantThinking, .assistantText,
+                         .preTool, .postTool:
+                        // These are now routed through OpencodeChatItemAdapter
+                        // → onOpencodeChatItems → chatItemBatch. Should not
+                        // reach here in normal operation.
+                        break
+                    }
+                }
+            },
+            onOpencodeChatItems: { chatItems in
+                Task {
+                    await SessionStore.shared.process(.chatItemBatch(chatItems))
+                }
             }
         )
     }
