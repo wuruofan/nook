@@ -18,16 +18,22 @@ final class NowPlayingController: MediaControllerProtocol {
         let terminationStatus: Int32
     }
 
+    private struct PendingOptimisticToggle {
+        let until: Date
+        let expectedIsPlaying: Bool
+    }
+
     private let subject = CurrentValueSubject<PlaybackState, Never>(PlaybackState())
     private let decoder = JSONDecoder()
     private let logger = Logger(subsystem: "com.celestial.Nook", category: "NowPlaying")
     private let optimisticToggleProtectionWindow: TimeInterval = 0.8
+    private let optimisticElapsedTolerance: TimeInterval = 1.0
 
     private var cachedFrameworkURL: URL?
     private var streamProcess: Process?
     private var streamPipeHandler: JSONLinesPipeHandler?
     private var streamTask: Task<Void, Never>?
-    private var pendingOptimisticToggleUntil: Date?
+    private var pendingOptimisticToggle: PendingOptimisticToggle?
 
     var playbackStatePublisher: AnyPublisher<PlaybackState, Never> {
         subject.removeDuplicates().eraseToAnyPublisher()
@@ -212,15 +218,18 @@ private extension NowPlayingController {
         let now = Date()
         let optimisticCurrentTime = displayedTime.map {
             clampedElapsedTime($0, duration: current.duration)
-        } ?? clampedElapsedTime(current.currentTime, duration: current.duration)
+        } ?? projectedElapsedTime(for: current, at: now)
 
         var optimistic = current
         optimistic.currentTime = optimisticCurrentTime
         optimistic.lastUpdated = now
         optimistic.isPlaying.toggle()
-        pendingOptimisticToggleUntil = now.addingTimeInterval(optimisticToggleProtectionWindow)
+        pendingOptimisticToggle = PendingOptimisticToggle(
+            until: now.addingTimeInterval(optimisticToggleProtectionWindow),
+            expectedIsPlaying: optimistic.isPlaying
+        )
         logger.debug(
-            "optimisticToggle displayedTime=\(String(describing: displayedTime), privacy: .public) optimisticCurrentTime=\(optimisticCurrentTime, privacy: .public) previousCurrentTime=\(current.currentTime, privacy: .public) previousIsPlaying=\(current.isPlaying, privacy: .public) optimisticIsPlaying=\(optimistic.isPlaying, privacy: .public) protectUntil=\(self.pendingOptimisticToggleUntil?.ISO8601Format() ?? "nil", privacy: .public)"
+            "optimisticToggle displayedTime=\(String(describing: displayedTime), privacy: .public) optimisticCurrentTime=\(optimisticCurrentTime, privacy: .public) previousCurrentTime=\(current.currentTime, privacy: .public) previousIsPlaying=\(current.isPlaying, privacy: .public) optimisticIsPlaying=\(optimistic.isPlaying, privacy: .public) protectUntil=\(self.pendingOptimisticToggle?.until.ISO8601Format() ?? "nil", privacy: .public)"
         )
         subject.send(optimistic)
     }
@@ -329,7 +338,6 @@ private extension NowPlayingController {
         logger.debug(
             "applySnapshot playing=\(String(describing: snapshot.playing), privacy: .public) elapsedTime=\(String(describing: snapshot.elapsedTime), privacy: .public) playbackRate=\(String(describing: snapshot.playbackRate), privacy: .public) timestamp=\(String(describing: snapshot.timestamp), privacy: .public) -> currentTime=\(reconciledState.currentTime, privacy: .public) isPlaying=\(reconciledState.isPlaying, privacy: .public) lastUpdated=\(reconciledState.lastUpdated.ISO8601Format(), privacy: .public)"
         )
-        pendingOptimisticToggleUntil = nil
         subject.send(reconciledState)
     }
 
@@ -338,27 +346,33 @@ private extension NowPlayingController {
 
         if shouldIgnoreStreamEventDuringOptimisticToggle(event) {
             logger.debug(
-                "ignoreStreamEvent diff=\(event.diff ?? false, privacy: .public) playing=\(String(describing: event.payload.playing), privacy: .public) elapsedTime=\(String(describing: event.payload.elapsedTime), privacy: .public) playbackRate=\(String(describing: event.payload.playbackRate), privacy: .public) timestamp=\(String(describing: event.payload.timestamp), privacy: .public) pendingUntil=\(self.pendingOptimisticToggleUntil?.ISO8601Format() ?? "nil", privacy: .public)"
+                "ignoreStreamEvent diff=\(event.diff ?? false, privacy: .public) playing=\(String(describing: event.payload.playing), privacy: .public) elapsedTime=\(String(describing: event.payload.elapsedTime), privacy: .public) playbackRate=\(String(describing: event.payload.playbackRate), privacy: .public) timestamp=\(String(describing: event.payload.timestamp), privacy: .public) pendingUntil=\(self.pendingOptimisticToggle?.until.ISO8601Format() ?? "nil", privacy: .public)"
             )
             return
         }
 
+        let previousState = subject.value
         let state = makePlaybackState(
             payload: event.payload,
             diff: event.diff ?? false,
-            previous: subject.value
+            previous: previousState
+        )
+        let reconciledState = reconcileSnapshotIfNeeded(
+            snapshot: event.payload,
+            incoming: state,
+            previous: previousState
         )
         logger.debug(
-            "applyStreamEvent diff=\(event.diff ?? false, privacy: .public) playing=\(String(describing: event.payload.playing), privacy: .public) elapsedTime=\(String(describing: event.payload.elapsedTime), privacy: .public) playbackRate=\(String(describing: event.payload.playbackRate), privacy: .public) timestamp=\(String(describing: event.payload.timestamp), privacy: .public) -> currentTime=\(state.currentTime, privacy: .public) isPlaying=\(state.isPlaying, privacy: .public) lastUpdated=\(state.lastUpdated.ISO8601Format(), privacy: .public)"
+            "applyStreamEvent diff=\(event.diff ?? false, privacy: .public) playing=\(String(describing: event.payload.playing), privacy: .public) elapsedTime=\(String(describing: event.payload.elapsedTime), privacy: .public) playbackRate=\(String(describing: event.payload.playbackRate), privacy: .public) timestamp=\(String(describing: event.payload.timestamp), privacy: .public) -> currentTime=\(reconciledState.currentTime, privacy: .public) isPlaying=\(reconciledState.isPlaying, privacy: .public) lastUpdated=\(reconciledState.lastUpdated.ISO8601Format(), privacy: .public)"
         )
-        subject.send(state)
+        subject.send(reconciledState)
     }
 
     private func shouldIgnoreStreamEventDuringOptimisticToggle(_ event: AdapterStreamEvent) -> Bool {
-        guard let pendingUntil = pendingOptimisticToggleUntil else { return false }
+        guard let pending = pendingOptimisticToggle else { return false }
 
-        if Date() >= pendingUntil {
-            pendingOptimisticToggleUntil = nil
+        if Date() >= pending.until {
+            pendingOptimisticToggle = nil
             return false
         }
 
@@ -377,23 +391,34 @@ private extension NowPlayingController {
         incoming: PlaybackState,
         previous: PlaybackState
     ) -> PlaybackState {
-        guard pendingOptimisticToggleUntil != nil else { return incoming }
+        guard let pending = pendingOptimisticToggle else { return incoming }
 
         let now = Date()
+        guard now < pending.until else {
+            pendingOptimisticToggle = nil
+            return incoming
+        }
+
         let previousProjectedTime = projectedElapsedTime(for: previous, at: now)
         let incomingProjectedTime = projectedElapsedTime(for: incoming, at: now)
-        let isLargeRegression = incomingProjectedTime + 1.0 < previousProjectedTime
         let hasExplicitTransportToggle = snapshot.playing != nil
+        let hasStaleTransportState = hasExplicitTransportToggle
+            && incoming.isPlaying != pending.expectedIsPlaying
+        let hasLargeElapsedJump = abs(incomingProjectedTime - previousProjectedTime) > optimisticElapsedTolerance
 
-        guard hasExplicitTransportToggle, isLargeRegression else {
+        guard hasStaleTransportState || hasLargeElapsedJump else {
+            if hasExplicitTransportToggle && incoming.isPlaying == pending.expectedIsPlaying {
+                pendingOptimisticToggle = nil
+            }
             return incoming
         }
 
         var reconciled = incoming
+        reconciled.isPlaying = pending.expectedIsPlaying
         reconciled.currentTime = previousProjectedTime
         reconciled.lastUpdated = now
         logger.debug(
-            "reconcileSnapshot previousProjected=\(previousProjectedTime, privacy: .public) incomingProjected=\(incomingProjectedTime, privacy: .public) reconciledCurrentTime=\(reconciled.currentTime, privacy: .public) incomingIsPlaying=\(incoming.isPlaying, privacy: .public)"
+            "reconcileSnapshot previousProjected=\(previousProjectedTime, privacy: .public) incomingProjected=\(incomingProjectedTime, privacy: .public) reconciledCurrentTime=\(reconciled.currentTime, privacy: .public) incomingIsPlaying=\(incoming.isPlaying, privacy: .public) expectedIsPlaying=\(pending.expectedIsPlaying, privacy: .public)"
         )
         return reconciled
     }
@@ -412,19 +437,32 @@ private extension NowPlayingController {
         diff: Bool,
         previous: PlaybackState
     ) -> PlaybackState {
-        PlaybackState(
-            bundleIdentifier: payload.bundleIdentifier
-                ?? payload.parentApplicationBundleIdentifier
-                ?? (diff ? previous.bundleIdentifier : NSWorkspace.shared.frontmostApplication?.bundleIdentifier),
+        let bundleIdentifier = payload.bundleIdentifier
+            ?? payload.parentApplicationBundleIdentifier
+            ?? (diff ? previous.bundleIdentifier : NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+        let title = resolvedString(payload.title, previous: previous.title, diff: diff)
+        let artist = resolvedString(payload.artist, previous: previous.artist, diff: diff)
+        let album = resolvedString(payload.album, previous: previous.album, diff: diff)
+
+        return PlaybackState(
+            bundleIdentifier: bundleIdentifier,
             isPlaying: payload.playing ?? (diff ? previous.isPlaying : false),
-            title: resolvedString(payload.title, previous: previous.title, diff: diff),
-            artist: resolvedString(payload.artist, previous: previous.artist, diff: diff),
-            album: resolvedString(payload.album, previous: previous.album, diff: diff),
+            title: title,
+            artist: artist,
+            album: album,
             currentTime: resolvedDouble(payload.elapsedTime, previous: previous.currentTime, diff: diff),
             duration: resolvedDouble(payload.duration, previous: previous.duration, diff: diff),
             playbackRate: resolvedDouble(payload.playbackRate, previous: previous.playbackRate, diff: diff),
             lastUpdated: resolvedDate(payload.timestamp, previous: previous.lastUpdated, diff: diff),
-            artworkData: resolvedArtworkData(payload.artworkData, previous: previous.artworkData, diff: diff)
+            artworkData: resolvedArtworkData(
+                payload.artworkData,
+                previous: previous,
+                diff: diff,
+                bundleIdentifier: bundleIdentifier,
+                title: title,
+                artist: artist,
+                album: album
+            )
         )
     }
 
@@ -442,11 +480,30 @@ private extension NowPlayingController {
         return diff ? previous : 0
     }
 
-    private func resolvedArtworkData(_ value: String?, previous: Data?, diff: Bool) -> Data? {
-        if let value {
+    private func resolvedArtworkData(
+        _ value: String?,
+        previous: PlaybackState,
+        diff: Bool,
+        bundleIdentifier: String?,
+        title: String,
+        artist: String,
+        album: String
+    ) -> Data? {
+        if let value, !value.isEmpty {
             return Data(base64Encoded: value)
         }
-        return diff ? previous : nil
+        guard let previousArtwork = previous.artworkData else { return nil }
+        guard !diff else { return previousArtwork }
+        guard isSameNowPlayingItem(
+            previous: previous,
+            bundleIdentifier: bundleIdentifier,
+            title: title,
+            artist: artist,
+            album: album
+        ) else {
+            return nil
+        }
+        return previousArtwork
     }
 
     private func resolvedDate(_ value: String?, previous: Date, diff: Bool) -> Date {
@@ -454,6 +511,36 @@ private extension NowPlayingController {
             return date
         }
         return diff ? previous : Date()
+    }
+
+    private func isSameNowPlayingItem(
+        previous: PlaybackState,
+        bundleIdentifier: String?,
+        title: String,
+        artist: String,
+        album: String
+    ) -> Bool {
+        let previousTitle = normalizedPlaybackText(previous.title)
+        let incomingTitle = normalizedPlaybackText(title)
+        guard !incomingTitle.isEmpty, incomingTitle == previousTitle else {
+            return false
+        }
+
+        return playbackFieldMatches(incoming: artist, previous: previous.artist)
+            && playbackFieldMatches(incoming: album, previous: previous.album)
+            && playbackFieldMatches(incoming: bundleIdentifier, previous: previous.bundleIdentifier)
+    }
+
+    private func playbackFieldMatches(incoming: String?, previous: String?) -> Bool {
+        let incomingText = normalizedPlaybackText(incoming)
+        let previousText = normalizedPlaybackText(previous)
+        return incomingText.isEmpty || previousText.isEmpty || incomingText == previousText
+    }
+
+    private func normalizedPlaybackText(_ value: String?) -> String {
+        (value ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     }
 
     private func logDecodeFailure(for data: Data, context: String) {
