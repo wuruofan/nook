@@ -23,15 +23,20 @@ struct OpencodeHookEnvelope: Decodable, Sendable {
 ///
 /// Mirrors CodexSessionEvent so the two integrations share the same
 /// session-tracking machinery inside SessionStore.
+///
+/// `messageId` on chat-item-producing events (assistantThinking/Text, preTool,
+/// postTool, userPromptSubmitted) carries the opencode message ID for use by
+/// OpencodeChatItemAdapter's BlockOrdering. It is optional with a default of
+/// nil so existing call sites continue to compile without changes.
 enum OpencodeSessionEvent: Sendable {
     case sessionStart(sessionId: String, cwd: String)
-    case userPromptSubmit(sessionId: String, cwd: String, prompt: String?)
+    case userPromptSubmitted(sessionId: String, cwd: String, prompt: String?, messageId: String? = nil)
     case processingStarted(sessionId: String, cwd: String)
     case waitingForUserInput(sessionId: String, cwd: String)
-    case assistantThinking(sessionId: String, cwd: String, text: String)
-    case assistantText(sessionId: String, cwd: String, text: String)
-    case preTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?)
-    case postTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String? = nil, error: String? = nil)
+    case assistantThinking(sessionId: String, cwd: String, text: String, messageId: String? = nil)
+    case assistantText(sessionId: String, cwd: String, text: String, messageId: String? = nil)
+    case preTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, messageId: String? = nil)
+    case postTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String? = nil, error: String? = nil, messageId: String? = nil)
     case stop(sessionId: String, cwd: String)
     // MARK: - Subagent events
     // All subagent events are scoped to the PARENT session — the adapter

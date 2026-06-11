@@ -115,6 +115,10 @@ typealias CodexHookEventHandler = @Sendable (CodexSessionEvent) -> Void
 /// Callback for OpenCode hook events
 typealias OpencodeHookEventHandler = @Sendable (OpencodeSessionEvent) -> Void
 
+/// Callback for OpenCode chat item updates (from OpencodeChatItemAdapter)
+typealias OpencodeChatItemsHandler = @Sendable ([ChatItemUpdate]) -> Void
+
+
 /// Callback for permission response failures (socket died)
 typealias PermissionFailureHandler = @Sendable (_ sessionId: String, _ toolUseId: String) -> Void
 
@@ -129,6 +133,7 @@ class HookSocketServer {
     private var eventHandler: HookEventHandler?
     private var codexEventHandler: CodexHookEventHandler?
     private var opencodeEventHandler: OpencodeHookEventHandler?
+    private var opencodeChatItemsHandler: OpencodeChatItemsHandler?
     private var permissionFailureHandler: PermissionFailureHandler?
     private let queue = DispatchQueue(label: "com.celestial.Nook.socket", qos: .userInitiated)
 
@@ -149,14 +154,16 @@ class HookSocketServer {
         onEvent: @escaping HookEventHandler,
         onPermissionFailure: PermissionFailureHandler? = nil,
         onCodexEvent: CodexHookEventHandler? = nil,
-        onOpencodeEvent: OpencodeHookEventHandler? = nil
+        onOpencodeEvent: OpencodeHookEventHandler? = nil,
+        onOpencodeChatItems: OpencodeChatItemsHandler? = nil
     ) {
         queue.async { [weak self] in
             self?.startServer(
                 onEvent: onEvent,
                 onPermissionFailure: onPermissionFailure,
                 onCodexEvent: onCodexEvent,
-                onOpencodeEvent: onOpencodeEvent
+                onOpencodeEvent: onOpencodeEvent,
+                onOpencodeChatItems: onOpencodeChatItems
             )
         }
     }
@@ -165,13 +172,15 @@ class HookSocketServer {
         onEvent: @escaping HookEventHandler,
         onPermissionFailure: PermissionFailureHandler?,
         onCodexEvent: CodexHookEventHandler?,
-        onOpencodeEvent: OpencodeHookEventHandler?
+        onOpencodeEvent: OpencodeHookEventHandler?,
+        onOpencodeChatItems: OpencodeChatItemsHandler?
     ) {
         guard serverSocket < 0 else { return }
 
         eventHandler = onEvent
         codexEventHandler = onCodexEvent
         opencodeEventHandler = onOpencodeEvent
+        opencodeChatItemsHandler = onOpencodeChatItems
         permissionFailureHandler = onPermissionFailure
 
         unlink(Self.socketPath)
@@ -238,6 +247,7 @@ class HookSocketServer {
         acceptSource = nil
         unlink(Self.socketPath)
         codexEventHandler = nil
+        opencodeChatItemsHandler = nil
 
         permissionsLock.lock()
         for (_, pending) in pendingPermissions {
@@ -460,6 +470,20 @@ class HookSocketServer {
                 opencodeEventHandler?(event)
             }
 
+        case .opencodeChatItems(let chatItems, let passthrough):
+            close(clientSocket)
+            // Dispatch chat items FIRST so their Task {} is enqueued
+            // before any passthrough lifecycle events (e.g. stop).
+            // This prevents the race where stop runs before chat items
+            // are applied, which would insert items into an idle session.
+            if !chatItems.isEmpty {
+                opencodeChatItemsHandler?(chatItems)
+            }
+            for event in passthrough {
+                socketLog("Received OpenCode passthrough: \(String(describing: event))")
+                opencodeEventHandler?(event)
+            }
+
         case .opencodeSkipped(let type):
             close(clientSocket)
             // Normal: opencode envelope decoded, but adapter chose not to surface
@@ -477,6 +501,7 @@ class HookSocketServer {
         case claude(HookEvent)
         case codex(CodexSessionEvent)
         case opencode([OpencodeSessionEvent])
+        case opencodeChatItems([ChatItemUpdate], [OpencodeSessionEvent])
         case opencodeSkipped(type: String)
         case unsupportedCodex(eventName: String)
         case unknown
@@ -495,17 +520,12 @@ class HookSocketServer {
         }
 
         if let opencodeEnvelope = try? JSONDecoder().decode(OpencodeHookEnvelope.self, from: data) {
-            do {
-                let opencodeEvents = OpencodeHookAdapter.adapt(opencodeEnvelope)
-                if !opencodeEvents.isEmpty {
-                    return .opencode(opencodeEvents)
-                }
-                // Envelope decoded fine; adapter just had nothing to surface.
-                return .opencodeSkipped(type: opencodeEnvelope.type)
-            } catch {
-                logger.warning("Opencode adapter error: \(error.localizedDescription)")
-                return .unknown
+            let result = OpencodeChatItemAdapter.shared.adaptAndConvert(opencodeEnvelope)
+            if !result.chatItemUpdates.isEmpty || !result.passthroughEvents.isEmpty {
+                return .opencodeChatItems(result.chatItemUpdates, result.passthroughEvents)
             }
+            // Envelope decoded fine; adapter just had nothing to surface.
+            return .opencodeSkipped(type: opencodeEnvelope.type)
         }
 
         return .unknown

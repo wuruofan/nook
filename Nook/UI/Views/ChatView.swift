@@ -1416,7 +1416,14 @@ struct ThinkingView: View {
                     .frame(width: 6, height: 6)
                     .padding(.top, 4)
 
-                Text(isExpanded ? text : String(text.prefix(80)) + (canExpand ? "..." : ""))
+                Text({
+                    let display = isExpanded
+                        ? text
+                        : text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return isExpanded
+                        ? display
+                        : String(display.prefix(80)) + (canExpand ? "..." : "")
+                }())
                     .font(.system(size: 11))
                     .foregroundColor(secondaryTextColor)
                     .italic()

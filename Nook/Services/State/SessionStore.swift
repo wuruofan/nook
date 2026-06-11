@@ -40,6 +40,11 @@ actor SessionStore {
     /// after a short quiet window to avoid stale sessions lingering forever.
     private let codexIdleExpirationSeconds: TimeInterval = 600
 
+    /// BlockOrdering keys for chat items (from unified ChatItemUpdate path).
+    /// Maps chatItem.id → BlockOrdering so ChatItemSorter can maintain
+    /// correct display order regardless of event arrival timing.
+    private var blockOrderings: [String: BlockOrdering] = [:]
+
     // MARK: - Published State (for UI)
 
     /// Publisher for session state changes (nonisolated for Combine subscription from any context)
@@ -109,6 +114,14 @@ actor SessionStore {
 
         case .opencodeStopped(let sessionId, let cwd):
             processOpencodeStop(sessionId: sessionId, cwd: cwd)
+
+        case .chatItemUpdate(let update):
+            applyChatItemUpdate(update)
+
+        case .chatItemBatch(let updates):
+            for update in updates {
+                applyChatItemUpdate(update)
+            }
 
         case .permissionApproved(let sessionId, let toolUseId):
             await processPermissionApproved(sessionId: sessionId, toolUseId: toolUseId)
@@ -442,6 +455,28 @@ actor SessionStore {
     private func processOpencodeSessionStart(sessionId: String, cwd: String) {
         let isNewSession = sessions[sessionId] == nil
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
+        // When the session was auto-created by applyChatItemUpdate
+        // (chat items arrived ~1ms before session.updated), the cwd is
+        // a placeholder "". Since cwd/projectName are `let`, we rebuild
+        // the session struct with the real values, preserving all
+        // mutable state (chatItems, toolTracker, phase, etc.).
+        if session.cwd.isEmpty, !cwd.isEmpty {
+            session = SessionState(
+                sessionId: session.sessionId,
+                provider: session.provider,
+                cwd: cwd,
+                pid: session.pid, tty: session.tty, isInTmux: session.isInTmux,
+                phase: session.phase,
+                chatItems: session.chatItems,
+                toolTracker: session.toolTracker,
+                subagentState: session.subagentState,
+                conversationInfo: session.conversationInfo,
+                needsClearReconciliation: session.needsClearReconciliation,
+                completionNotificationAt: session.completionNotificationAt,
+                lastActivity: session.lastActivity,
+                createdAt: session.createdAt
+            )
+        }
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = Date()
         session.completionNotificationAt = nil
@@ -450,6 +485,10 @@ actor SessionStore {
         }
         sessions[sessionId] = session
 
+        // Track "Session Started" even for auto-created sessions —
+        // applyChatItemUpdate fires the Mixpanel event on first creation
+        // but processOpencodeSessionStart may be the first real session
+        // start if the chat-item auto-create was for a different session.
         if isNewSession {
             mixpanel?.track(event: "Session Started", properties: ["provider": "opencode"])
         }
@@ -797,6 +836,190 @@ actor SessionStore {
 
         session.toolTracker.inProgress.removeAll()
         sessions[sessionId] = session
+    }
+
+    // MARK: - Unified ChatItem Update Processing
+
+    /// Apply a single ChatItemUpdate to session state. This is the unified
+    /// entry point for all provider chat item mutations, replacing the
+    /// provider-specific processOpencode* / processCodex* methods.
+    ///
+    /// After each mutation, chatItems are re-sorted using ChatItemSorter
+    /// to maintain correct display order based on BlockOrdering keys.
+    ///
+    /// Session auto-creation: OpenCode's bus can deliver message events
+    /// ~1ms before the session.updated event that triggers sessionStart.
+    /// Rather than dropping chat items for unknown sessions (the original
+    /// guard-early-return bug), we create a minimal session placeholder
+    /// here. The imminent sessionStart passthrough will then enrich it
+    /// with cwd, pid, and other metadata via the explicit cwd-override
+    /// in processOpencodeSessionStart.
+    private func applyChatItemUpdate(_ update: ChatItemUpdate) {
+        let now = Date()
+        var session = sessions[update.sessionId] ?? SessionState(
+            sessionId: update.sessionId,
+            provider: update.provider,
+            cwd: ""  // placeholder — filled by the imminent sessionStart
+        )
+        let isNewSession = sessions[update.sessionId] == nil
+        if isNewSession {
+            DebugLog.shared.write("[chat-item-update] auto-created session for \(update.sessionId) (pre-sessionStart chat item)")
+            // Fire Mixpanel immediately on auto-create so we never miss
+            // the "Session Started" event even if sessionStart passthrough
+            // arrives later and finds the session already existing.
+            mixpanel?.track(event: "Session Started", properties: ["provider": "opencode"])
+        }
+
+        // ── Early guards ──────────────────────────────────────────────
+
+        // Skip empty thinking blocks — they render as orphan grey dots.
+        if case .thinking(let text) = update.block,
+           text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return
+        }
+
+        // ── Mutation ──────────────────────────────────────────────────
+
+        switch update.mutation {
+        case .insert:
+            let item = ChatHistoryItem(
+                id: update.id,
+                type: update.block.toChatHistoryItemType(),
+                timestamp: now
+            )
+            if let idx = session.chatItems.firstIndex(where: { $0.id == update.id }) {
+                // Upsert: replace existing item (preserves original timestamp)
+                let originalTimestamp = session.chatItems[idx].timestamp
+                session.chatItems[idx] = ChatHistoryItem(
+                    id: update.id,
+                    type: update.block.toChatHistoryItemType(),
+                    timestamp: originalTimestamp
+                )
+            } else {
+                session.chatItems.append(item)
+            }
+            blockOrderings[update.id] = update.ordering
+
+        case .update:
+            if let idx = session.chatItems.firstIndex(where: { $0.id == update.id }) {
+                let originalTimestamp = session.chatItems[idx].timestamp
+                session.chatItems[idx] = ChatHistoryItem(
+                    id: update.id,
+                    type: update.block.toChatHistoryItemType(),
+                    timestamp: originalTimestamp
+                )
+            }
+
+        case .updateStatus:
+            if case .toolCall(let block) = update.block,
+               let idx = session.chatItems.firstIndex(where: { $0.id == update.id }),
+               case .toolCall(var existing) = session.chatItems[idx].type {
+                existing.status = block.status
+                if let result = block.result {
+                    existing.result = result
+                }
+                if let structured = block.structuredResult {
+                    existing.structuredResult = structured
+                }
+                session.chatItems[idx] = ChatHistoryItem(
+                    id: update.id,
+                    type: .toolCall(existing),
+                    timestamp: session.chatItems[idx].timestamp
+                )
+            }
+
+        case .remove:
+            session.chatItems.removeAll { $0.id == update.id }
+            blockOrderings.removeValue(forKey: update.id)
+        }
+
+        // ── Lifecycle side effects ────────────────────────────────────
+        // Mirror the side effects that the old processOpencode* methods
+        // applied (lastActivity, phase, completionNotificationAt,
+        // conversationInfo, toolTracker). Only the .insert / .updateStatus
+        // mutations carry meaningful lifecycle signals; .update / .remove
+        // are structural and don't change the session's activity state.
+
+        if update.mutation == .insert || update.mutation == .updateStatus {
+            enrichOpencodeRuntimeMetadata(session: &session)
+            session.lastActivity = now
+
+            switch update.block {
+            case .userPrompt(let text):
+                session.phase = .processing
+                session.completionNotificationAt = nil
+                session.conversationInfo = ConversationInfo(
+                    summary: session.conversationInfo.summary,
+                    lastMessage: text,
+                    lastMessageRole: "user",
+                    lastToolName: nil,
+                    firstUserMessage: session.conversationInfo.firstUserMessage ?? text,
+                    lastUserMessageDate: now,
+                    usage: session.conversationInfo.usage
+                )
+
+            case .assistantText(let text):
+                session.phase = hasRunningTools(in: session) ? .processing : .idle
+                session.completionNotificationAt = now
+                session.conversationInfo = ConversationInfo(
+                    summary: session.conversationInfo.summary,
+                    lastMessage: text,
+                    lastMessageRole: "assistant",
+                    lastToolName: nil,
+                    firstUserMessage: session.conversationInfo.firstUserMessage,
+                    lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
+                    usage: session.conversationInfo.usage
+                )
+
+            case .thinking:
+                // Thinking is a signal of active processing. Clear any
+                // stale completionNotificationAt (prevents premature
+                // notification if thinking starts after a tool completes
+                // but before the next assistantText), and ensure phase
+                // reflects active work even if no tool is running yet.
+                session.completionNotificationAt = nil
+                if !session.phase.isActive {
+                    session.phase = .processing
+                }
+
+            case .toolCall(let tc):
+                if update.mutation == .insert {
+                    // Tool started — track in toolTracker so that
+                    // hasRunningTools() / progress indicators work.
+                    session.toolTracker.startTool(id: update.id, name: tc.name)
+                    session.completionNotificationAt = nil
+                    session.phase = .processing
+                } else {
+                    // Tool finished (updateStatus) — use the adapter's
+                    // isError flag (which includes bash metadata detection)
+                    // for accurate success/failure tracking.
+                    session.toolTracker.completeTool(id: update.id, success: !update.isError)
+                    session.phase = hasRunningTools(in: session) ? .processing : .idle
+                }
+                session.conversationInfo = ConversationInfo(
+                    summary: session.conversationInfo.summary,
+                    lastMessage: session.conversationInfo.lastMessage,
+                    lastMessageRole: "tool",
+                    lastToolName: tc.name,
+                    firstUserMessage: session.conversationInfo.firstUserMessage,
+                    lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
+                    usage: session.conversationInfo.usage
+                )
+
+            case .image, .interrupted:
+                break
+            }
+        }
+
+        // ── Re-sort & persist ─────────────────────────────────────────
+
+        session.chatItems = ChatItemSorter.sorted(
+            session.chatItems,
+            orderings: blockOrderings
+        )
+
+        sessions[update.sessionId] = session
+        DebugLog.shared.write("[chat-item-update] session=\(update.sessionId) id=\(update.id) mutation=\(update.mutation) totalItems=\(session.chatItems.count)")
     }
 
     private func makeOpencodeToolId(for sessionId: String) -> String {
@@ -1598,6 +1821,10 @@ actor SessionStore {
                             timestamp: message.timestamp
                         )
                     } else {
+                        // Skip inserting thinking blocks with empty text
+                        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                            continue
+                        }
                         session.chatItems.append(ChatHistoryItem(
                             id: itemId,
                             type: .thinking(text),

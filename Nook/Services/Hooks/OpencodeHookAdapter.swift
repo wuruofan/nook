@@ -326,6 +326,8 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         guard let toolName = part["tool"] as? String else { return [] }
         guard let state = part["state"] as? [String: Any] else { return [] }
         guard let status = state["status"] as? String else { return [] }
+
+        let messageId = part["messageID"] as? String
         // The Task tool itself is the parent-side event; the child never sees
         // its own task invocation, so this guard is just defensive.
         guard toolName != "task" else { return [] }
@@ -523,7 +525,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
                 consumedUserPromptBySession[sessionId] = buffered
                 lock.unlock()
                 log.notice("→ userPromptSubmit (from buffer) session=\(sessionId) messageID=\(messageId) textChars=\(buffered.count)")
-                return [.userPromptSubmit(sessionId: sessionId, cwd: cwd, prompt: buffered)]
+                return [.userPromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: buffered, messageId: messageId)]
             }
             // Otherwise, wait for the text part.
             lock.lock()
@@ -670,7 +672,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             consumedUserPromptBySession[sessionId] = text
             lock.unlock()
             Self.logNotice("→ userPromptSubmit (text part matched) session=\(sessionId) messageID=\(messageId) textChars=\(text.count)")
-            return [.userPromptSubmit(sessionId: sessionId, cwd: cwd, prompt: text)]
+            return [.userPromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: text, messageId: messageId)]
         }
 
         // Skip if this messageID was already consumed as a user message.
@@ -775,9 +777,8 @@ final class OpencodeHookAdapter: @unchecked Sendable {
 
         if alreadyEmitted { return [] }
         Self.logNotice("→ assistantThinking (final) session=\(sessionId) messageID=\(messageId) textChars=\(text.count)")
-        return [.assistantThinking(sessionId: sessionId, cwd: cwd, text: text)]
+        return [.assistantThinking(sessionId: sessionId, cwd: cwd, text: text, messageId: messageId)]
     }
-
     /// Tag a messageID as a reasoning message as soon as the reasoning part
     /// is created (empty-text `message.part.updated type=reasoning`). This
     /// must happen BEFORE the first `message.part.delta` for the same
@@ -804,6 +805,8 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         guard let toolName = part["tool"] as? String else { return [] }
         guard let state = part["state"] as? [String: Any] else { return [] }
         guard let status = state["status"] as? String else { return [] }
+
+        let messageId = part["messageID"] as? String
 
         // The opencode `question` tool IS rendered as a chatItem — the user
         // wants to see the question + answer between the surrounding thinking
@@ -843,7 +846,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             Self.logNotice("→ task preTool session=\(sessionId) callID=\(callId) child=\(childId ?? "<none>") newlyLinked=\(wasNewlyLinked)")
             let pre: OpencodeSessionEvent = .preTool(
                 sessionId: sessionId, cwd: cwd,
-                toolName: toolName, toolUseId: callId, inputSummary: inputSummary
+                toolName: toolName, toolUseId: callId, inputSummary: inputSummary, messageId: messageId
             )
             if let childId, wasNewlyLinked {
                 return [.subagentStarted(sessionId: sessionId, taskToolId: callId), pre]
@@ -865,7 +868,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
                     .postTool(
                         sessionId: sessionId, cwd: cwd,
                         toolName: toolName, toolUseId: callId, inputSummary: inputSummary,
-                        output: output, error: error
+                        output: output, error: error, messageId: messageId
                     )
                 ]
             }
@@ -907,13 +910,13 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         case "running":
             return [.preTool(
                 sessionId: sessionId, cwd: cwd,
-                toolName: toolName, toolUseId: callId, inputSummary: inputSummary
+                toolName: toolName, toolUseId: callId, inputSummary: inputSummary, messageId: messageId
             )]
         case "completed":
             return [.postTool(
                 sessionId: sessionId, cwd: cwd,
                 toolName: toolName, toolUseId: callId, inputSummary: inputSummary,
-                output: output, error: error
+                output: output, error: error, messageId: messageId
             )]
         default:
             return []
@@ -991,7 +994,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         lock.unlock()
         if !reasoning.isEmpty && !reasoningEmitted {
             Self.logNotice("→ assistantThinking (pre-text) session=\(sessionId) messageID=\(messageId) textChars=\(reasoning.count)")
-            events.append(.assistantThinking(sessionId: sessionId, cwd: cwd, text: reasoning))
+            events.append(.assistantThinking(sessionId: sessionId, cwd: cwd, text: reasoning, messageId: messageId))
         }
 
         // Then flush the text
@@ -1018,7 +1021,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             return events
         }
         Self.logNotice("→ assistantText session=\(sessionId) messageID=\(messageId) textChars=\(text.count) trigger=\(trigger)")
-        events.append(.assistantText(sessionId: sessionId, cwd: cwd, text: text))
+        events.append(.assistantText(sessionId: sessionId, cwd: cwd, text: text, messageId: messageId))
         return events
     }
 
@@ -1037,9 +1040,8 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             return []
         }
         Self.logNotice("→ assistantThinking session=\(sessionId) messageID=\(messageId) textChars=\(text.count) trigger=\(trigger)")
-        return [.assistantThinking(sessionId: sessionId, cwd: cwd, text: text)]
+        return [.assistantThinking(sessionId: sessionId, cwd: cwd, text: text, messageId: messageId)]
     }
-
     /// Flush all pending assistant text and reasoning buffers for a session
     /// (safety net for missed finish=stop events, e.g. on session idle).
     ///
@@ -1095,11 +1097,11 @@ final class OpencodeHookAdapter: @unchecked Sendable {
 
             if !reasoning.isEmpty && !reasoningEmitted {
                 Self.logNotice("→ assistantThinking (safety net) session=\(sessionId) messageID=\(messageId) textChars=\(reasoning.count)")
-                events.append(.assistantThinking(sessionId: sessionId, cwd: cwd, text: reasoning))
+                events.append(.assistantThinking(sessionId: sessionId, cwd: cwd, text: reasoning, messageId: messageId))
             }
             if !text.isEmpty && !textEmitted && !textSuppressed && !textStaleFromPriorTurn {
                 Self.logNotice("→ assistantText (safety net) session=\(sessionId) messageID=\(messageId) textChars=\(text.count)")
-                events.append(.assistantText(sessionId: sessionId, cwd: cwd, text: text))
+                events.append(.assistantText(sessionId: sessionId, cwd: cwd, text: text, messageId: messageId))
             } else if !text.isEmpty && (textSuppressed || textStaleFromPriorTurn) {
                 let reason = textSuppressed ? "question parent" : "stale from prior turn"
                 Self.logNotice("→ assistantText suppressed (safety net, \(reason)) session=\(sessionId) messageID=\(messageId) textChars=\(text.count)")

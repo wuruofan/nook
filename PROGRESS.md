@@ -13,6 +13,7 @@
 4. **#76 opencode tool result 渲染对齐 claude** — pending
 5. **opencode review 里的 Important #5** — `handleToolPart` 的 status switch 只 case `running` / `completed`，`error` 进 default。tool 报错时 UI 一直显示 running
 6. **Critical #3** — `createMinimalConfig()` 在 JSON 损坏时会覆盖原文件，先备份再覆盖更安全
+7. **统一 ChatItem 中间层重构**（设计 spec：[`docs/specs/2026-06-11-unified-chatitem-middle-layer-design.md`](docs/specs/2026-06-11-unified-chatitem-middle-layer-design.md)）— 引入 `ChatItemUpdate` 中间格式让三种 provider 走统一入口。Phase 2（OpenCode adapter）直接修复 thinking 排序 bug，Phase 5 把 `SessionStore.process()` 从 30+ case 降到 ~12 case。优先级：先 Phase 1+2 修复 thinking 排序，其他 phase 可后置。
 
 ## ⏸️ Paused Tasks
 | Task | 状态 | 阻塞点 / 入口 |

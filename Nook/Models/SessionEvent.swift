@@ -60,6 +60,16 @@ enum SessionEvent: Sendable {
     /// OpenCode stopped the current turn
     case opencodeStopped(sessionId: String, cwd: String)
 
+    // MARK: - Unified ChatItem Updates (from provider adapters)
+
+    /// A provider adapter produced a chat item operation (insert/update/remove).
+    /// This is the unified entry point that replaces provider-specific cases
+    /// for chat item mutations.
+    case chatItemUpdate(ChatItemUpdate)
+
+    /// A provider adapter produced multiple chat item operations in a batch.
+    case chatItemBatch([ChatItemUpdate])
+
     // MARK: - Permission Events (user actions)
 
     /// User approved a permission request
@@ -283,6 +293,10 @@ extension SessionEvent: CustomStringConvertible {
             return "subagentStopped(session: \(sessionId.prefix(8)), task: \(taskToolId.prefix(12)))"
         case .agentFileUpdated(let sessionId, let taskToolId, let tools):
             return "agentFileUpdated(session: \(sessionId.prefix(8)), task: \(taskToolId.prefix(12)), tools: \(tools.count))"
+        case .chatItemUpdate(let update):
+            return "chatItemUpdate(session: \(update.sessionId.prefix(8)), id: \(update.id.prefix(16)), mutation: \(update.mutation))"
+        case .chatItemBatch(let updates):
+            return "chatItemBatch(count: \(updates.count))"
         }
     }
 }
