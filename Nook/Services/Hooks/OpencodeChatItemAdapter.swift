@@ -107,7 +107,7 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
     private func isChatItemEvent(_ event: OpencodeSessionEvent) -> Bool {
         switch event {
         case .userPromptSubmitted, .assistantThinking, .assistantText,
-             .preTool, .postTool:
+             .preTool, .postTool, .image:
             return true
         case .sessionStart, .processingStarted, .waitingForUserInput, .stop,
              .subagentStarted, .subagentToolExecuted, .subagentToolCompleted, .subagentStopped:
@@ -207,6 +207,18 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
                 ordering: .messageRelative(messageId: msgId, typePriority: .action, blockIndex: 0),
                 mutation: .updateStatus, provider: .opencode,
                 isError: outputIsError
+            )]
+
+        case .image(let sid, _, let mediaType, let base64Data, let messageId):
+            let msgId = messageId ?? lookupMessageId(for: sid)
+            let idx = nextBlockIndex(sessionId: sid, messageId: msgId)
+            let imageBlock = ImageBlock(mediaType: mediaType, base64Data: base64Data)
+            let id = ChatItemIdFactory.opencodeBlockId(messageId: msgId, typePrefix: "image", blockIndex: idx)
+            return [ChatItemUpdate(
+                id: id, sessionId: sid,
+                block: .image(imageBlock),
+                ordering: .messageRelative(messageId: msgId, typePriority: BlockTypePriority.forBlock(.image(imageBlock)), blockIndex: idx),
+                mutation: .insert, provider: .opencode
             )]
 
         case .sessionStart, .processingStarted, .waitingForUserInput, .stop,

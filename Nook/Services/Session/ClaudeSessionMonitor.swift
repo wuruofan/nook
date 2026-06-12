@@ -123,7 +123,7 @@ class ClaudeSessionMonitor: ObservableObject {
                     case .subagentStopped(let sessionId, let taskToolId):
                         await SessionStore.shared.process(.subagentStopped(sessionId: sessionId, taskToolId: taskToolId))
                     case .userPromptSubmitted, .assistantThinking, .assistantText,
-                         .preTool, .postTool:
+                         .preTool, .postTool, .image:
                         // These are now routed through OpencodeChatItemAdapter
                         // → onOpencodeChatItems → chatItemBatch. Should not
                         // reach here in normal operation.

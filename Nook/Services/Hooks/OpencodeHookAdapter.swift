@@ -597,6 +597,19 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             return handleReasoningPart(sessionId: sessionId, cwd: cwd, part: part)
         case "tool":
             return handleToolPart(sessionId: sessionId, cwd: cwd, part: part)
+        case "file":
+            // Opencode sends user-attached images as file parts with a
+            // data URI in the `url` field: data:image/png;base64,xxxx
+            // Extract the base64 payload and emit an image event.
+            let messageId = part["messageID"] as? String  // nil preserves downstream fallback
+            let fileUrl = part["url"] as? String ?? ""
+            if let parsed = Self.parseImageDataURI(fileUrl) {
+                Self.logNotice("→ file part → image session=\(sessionId) messageID=\(messageId ?? "-") mime=\(parsed.mediaType) dataLen=\(parsed.base64Data.count)")
+                return [.image(sessionId: sessionId, cwd: cwd, mediaType: parsed.mediaType, base64Data: parsed.base64Data, messageId: messageId)]
+            } else {
+                Self.logNotice("→ file part skipped (not a valid image data URI) session=\(sessionId) url=\(String(fileUrl.prefix(60)))")
+                return []
+            }
         case "step-start":
             // Defensive backup: opencode v1.15.13 sometimes fires step-start
             // before any session.status=busy event (e.g. when the model is
@@ -976,6 +989,48 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         if let query = input["query"] as? String { return String(query.prefix(60)) }
         if let content = input["content"] as? String { return String(content.prefix(60)) }
         return toolName
+    }
+
+    /// Parsed result of an image data URI.
+    struct ImageDataURI {
+        let mediaType: String   // e.g. "image/png"
+        let base64Data: String
+    }
+
+    /// Parse a data URI and extract image data.
+    /// Returns nil if:
+    /// - Not a valid data URI format
+    /// - Content type is not an image (rejects audio, video, etc.)
+    /// - Base64 payload is empty or contains invalid characters
+    private static func parseImageDataURI(_ uri: String) -> ImageDataURI? {
+        guard uri.hasPrefix("data:") else { return nil }
+        guard let commaIndex = uri.firstIndex(of: ",") else { return nil }
+
+        // Parse header: "data:image/png;base64"
+        let header = String(uri[uri.index(after: uri.startIndex)..<commaIndex])
+        let parts = header.split(separator: ";")
+        guard let contentType = parts.first, !contentType.isEmpty else { return nil }
+
+        // Only accept image/* content types
+        guard contentType.hasPrefix("image/") else { return nil }
+
+        // Verify base64 encoding marker
+        guard parts.dropFirst().contains("base64") else { return nil }
+
+        // Extract and validate base64 payload
+        let base64Start = uri.index(after: commaIndex)
+        let base64 = String(uri[base64Start...])
+        guard !base64.isEmpty else { return nil }
+
+        // Basic validation: base64 should only contain valid characters
+        // (alphanumeric, +, /, =, and whitespace which we strip)
+        let stripped = base64.filter { !$0.isWhitespace }
+        let validBase64Chars = CharacterSet.alphanumerics
+            .union(CharacterSet(charactersIn: "+/="))
+        guard stripped.unicodeScalars.allSatisfy({ validBase64Chars.contains($0) }) else { return nil }
+        guard stripped.count % 4 == 0 else { return nil }  // base64 length must be multiple of 4
+
+        return ImageDataURI(mediaType: String(contentType), base64Data: stripped)
     }
 
     /// Flush one message's text buffer as a single .assistantText event.
