@@ -37,12 +37,19 @@ enum ChatItemSorter {
             return (mi1, bi1) < (mi2, bi2)
         case (.messageRelative(let m1, let p1, let b1), .messageRelative(let m2, let p2, let b2)):
             // opencode messageIDs have a monotonic creation-time prefix,
-            // so lexicographic order is chronological. Within the same
-            // message, typePriority ensures logical ordering (thinking
-            // before tools before text) regardless of event arrival order;
-            // blockIndex preserves insertion order within the same type.
+            // so lexicographic order is chronological.
+            //
+            // Within the same message, BlockTypePriority enforces causal
+            // ordering (reasoning → action → response) regardless of
+            // event arrival order. This mirrors opencode's own provider
+            // adapter which reorders reasoning before tool_use at API
+            // call time (see anomalyco/opencode PR #10474, commit e8d6d1c,
+            // and issues #9364, #3077).
+            //
+            // blockIndex preserves insertion order within the same type
+            // (e.g. multiple tool calls maintain their execution order).
             if m1 == m2 {
-                if p1 != p2 { return p1 < p2 }
+                if p1 != p2 { return p1.rawValue < p2.rawValue }
                 return b1 < b2
             }
             return m1 < m2

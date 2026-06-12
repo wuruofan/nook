@@ -85,9 +85,53 @@ enum BlockOrdering: Sendable, Equatable {
     /// monotonic); typePriority ensures logical ordering within a message
     /// (thinking=0 < tool=1 < text=2) regardless of event arrival order;
     /// blockIndex preserves insertion order within the same type.
-    case messageRelative(messageId: String, typePriority: Int, blockIndex: Int)
+    case messageRelative(messageId: String, typePriority: BlockTypePriority, blockIndex: Int)
     /// Fallback: raw timestamp ordering (Codex live events).
     case timestamp(Date)
+}
+
+// MARK: - BlockTypePriority
+
+/// Causal ordering of block types within a single message turn.
+///
+/// LLM generation follows a strict causal chain:
+///   reasoning (think) → tool use (act) → text response (respond)
+///
+/// OpenCode's event bus emits `message.part.updated` events in stream-
+/// processing order, NOT in causal order — tool parts may arrive before
+/// the reasoning final-text event. This is an inherent property of the
+/// event-driven architecture, not a bug:
+///
+///   - opencode stores message parts in arrival order (see
+///     `toModelMessagesEffect` in `message-v2.ts` which iterates
+///     `msg.parts` without reordering)
+///   - The Anthropic provider adapter reorders reasoning before tool_use
+///     at API call time (commit e8d6d1c, PR #10474)
+///   - Multiple issues confirm: #9364 ("assistant message content order
+///     causes API error"), #3077 ("Expected thinking, but found tool_use")
+///
+/// Nook mirrors this two-phase approach: events are stored in arrival
+/// order (blockIndex via `nextBlockIndex`), and the correct display
+/// order is reconstructed at sort time using this enum as a tiebreaker
+/// within the same message — exactly what opencode's provider adapter
+/// does for the API layer.
+enum BlockTypePriority: Int, Sendable {
+    case reasoning = 0
+    case action    = 1
+    case response  = 2
+    case terminal  = 99
+
+    /// Derive the causal priority from a block type.
+    static func forBlock(_ block: ChatItemBlock) -> BlockTypePriority {
+        switch block {
+        case .thinking:      return .reasoning
+        case .toolCall:      return .action
+        case .assistantText: return .response
+        case .userPrompt:    return .reasoning  // only block in its message
+        case .image:         return .action
+        case .interrupted:   return .terminal
+        }
+    }
 }
 
 // MARK: - BlockMutation

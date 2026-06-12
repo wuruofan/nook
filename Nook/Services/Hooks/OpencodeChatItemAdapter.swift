@@ -127,7 +127,7 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
             return [ChatItemUpdate(
                 id: id, sessionId: sid,
                 block: .userPrompt(text),
-                ordering: .messageRelative(messageId: msgId, typePriority: Self.typePriority(for: .userPrompt(text)), blockIndex: idx),
+                ordering: .messageRelative(messageId: msgId, typePriority: BlockTypePriority.forBlock(.userPrompt(text)), blockIndex: idx),
                 mutation: .insert, provider: .opencode
             )]
 
@@ -140,7 +140,7 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
             return [ChatItemUpdate(
                 id: id, sessionId: sid,
                 block: .thinking(trimmed),
-                ordering: .messageRelative(messageId: msgId, typePriority: Self.typePriority(for: .thinking(trimmed)), blockIndex: idx),
+                ordering: .messageRelative(messageId: msgId, typePriority: BlockTypePriority.forBlock(.thinking(trimmed)), blockIndex: idx),
                 mutation: .insert, provider: .opencode
             )]
 
@@ -153,7 +153,7 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
             return [ChatItemUpdate(
                 id: id, sessionId: sid,
                 block: .assistantText(trimmed),
-                ordering: .messageRelative(messageId: msgId, typePriority: Self.typePriority(for: .assistantText(trimmed)), blockIndex: idx),
+                ordering: .messageRelative(messageId: msgId, typePriority: BlockTypePriority.forBlock(.assistantText(trimmed)), blockIndex: idx),
                 mutation: .insert, provider: .opencode
             )]
 
@@ -175,7 +175,7 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
                     result: nil, structuredResult: nil,
                     subagentTools: []
                 )),
-                ordering: .messageRelative(messageId: msgId, typePriority: Self.typePriority(for: .toolCall(ChatItemToolCall(toolId: toolId, name: toolName, input: input, status: .running, result: nil, structuredResult: nil, subagentTools: []))), blockIndex: idx),
+                ordering: .messageRelative(messageId: msgId, typePriority: BlockTypePriority.forBlock(.toolCall(ChatItemToolCall(toolId: toolId, name: toolName, input: input, status: .running, result: nil, structuredResult: nil, subagentTools: []))), blockIndex: idx),
                 mutation: .insert, provider: .opencode
             )]
 
@@ -204,7 +204,7 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
                     result: resultBody, structuredResult: nil,
                     subagentTools: []
                 )),
-                ordering: .messageRelative(messageId: msgId, typePriority: 1, blockIndex: 0),
+                ordering: .messageRelative(messageId: msgId, typePriority: .action, blockIndex: 0),
                 mutation: .updateStatus, provider: .opencode,
                 isError: outputIsError
             )]
@@ -247,22 +247,6 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
         guard let output, !output.isEmpty else { return false }
         let tail = output.suffix(1024)
         return tail.contains("<bash_metadata>")
-    }
-
-    // MARK: - Type Priority
-
-    /// Logical ordering within a message: thinking before tools before text.
-    /// This ensures correct display order even when opencode streams events
-    /// out of logical sequence (e.g. tool events arriving before thinking).
-    private static func typePriority(for block: ChatItemBlock) -> Int {
-        switch block {
-        case .thinking:    return 0
-        case .toolCall:    return 1
-        case .assistantText: return 2
-        case .userPrompt:  return 0  // only block in its message
-        case .image:       return 1
-        case .interrupted: return 99
-        }
     }
 
 }
