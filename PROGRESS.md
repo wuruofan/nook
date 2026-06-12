@@ -1,16 +1,16 @@
 # Progress
 
-> Last updated: 2026-06-10
+> Last updated: 2026-06-12
 
 ## 🎯 Current Focus
-<!-- 现在没有"主攻中"任务，Bug H/I 等用户验证；Bug J 关闭。等用户决定下一步。 -->
+<!-- opencode 展示对齐 Claude 3 个 commit 已落（unwrap / 结构化 input / 旧 processOpencode* 清理），#76 关闭。Bug H/I 仍等用户验证/数据。等用户决定下一步。 -->
 
 ## 📥 Next Phases
 <!-- 下一步候选，按优先级 -->
 1. **Bug H (#78) 收尾** — Fix 1（trailing-echo 检测）已实现+日志验证。用户需要在自己 prompt 上复测，确认无回归后 commit。
 2. **Bug I (#79) 等数据** — 3 条被动诊断已加（subagent routing hit、pre-registration 计数、child registered with pre-reg events），用户跑能复现的 task 收集数据后再决定是否需要 fix。
 3. **#64 清理 unbounded session-scoped state** — 12 个 `private static var`（`pendingReasoningByMessage` / `knownReasoningMessageIds` / `emittedReasoningMessages` / `preRegistrationEventCount` / `consumedUserPromptBySession` / `consumedUserMessageIDs` / `sessionCwd` / `subagentToParent` / `subagentTaskToolId` / `parentAwaitingTask` / `messageSession` 等）永不清理。可在 `session.status=ended` 或 `subagentStopped` 钩子里清理。
-4. **#76 opencode tool result 渲染对齐 claude** — pending
+4. **#76 opencode tool result 渲染对齐 claude** — ✅ 已完成（spec：[docs/specs/2026-06-11-opencode-clause-display-alignment-design.md](docs/specs/2026-06-11-opencode-clause-display-alignment-design.md)），3 个 commit：d36b782（unwrap `<task_result>`）+ 537f725（结构化 input 透传）+ a29076a（删除 5 个被 ChatItemUpdate 取代的旧 handler）
 5. **opencode review 里的 Important #5** — `handleToolPart` 的 status switch 只 case `running` / `completed`，`error` 进 default。tool 报错时 UI 一直显示 running
 6. **Critical #3** — `createMinimalConfig()` 在 JSON 损坏时会覆盖原文件，先备份再覆盖更安全
 7. **统一 ChatItem 中间层重构**（设计 spec：[`docs/specs/2026-06-11-unified-chatitem-middle-layer-design.md`](docs/specs/2026-06-11-unified-chatitem-middle-layer-design.md)）— 引入 `ChatItemUpdate` 中间格式让三种 provider 走统一入口。Phase 2（OpenCode adapter）直接修复 thinking 排序 bug，Phase 5 把 `SessionStore.process()` 从 30+ case 降到 ~12 case。优先级：先 Phase 1+2 修复 thinking 排序，其他 phase 可后置。
@@ -22,6 +22,7 @@
 | #79 Bug I | 等诊断数据 | 入口：`OpencodeHookAdapter.swift` line 233 (subagent routing hit)、244 (pre-reg 计数)、378 (child registered with pre-reg events)。复现：父 task 嵌套子 agent，task 工具里 prompt 包含子 agent 的真实 text/reasoning 输出。收集 `/tmp/nook-debug.log` 后判断 3 条诊断有没有命中 |
 
 ## ✅ Recently Completed
+- **#76 opencode tool result 渲染对齐 claude** — 3 个 commit：d36b782（unwrap `<task_result>` XML 包裹，让 Agent 块不再泄漏 raw XML）+ 537f725（`stringifyInput` 把 opencode hook 的 `[String: Any]` 透传到 `ChatItemToolCall.input`，与 Claude `ToolUseBlock.input` 同形；同步 `SessionStore.upsertBlocks` 自动为 subagent container 构造 `TaskResult`；`ChatView.ToolCallView` 收紧为只在 `structuredResult != nil` 时显示 `ToolResultContent`）+ a29076a（删除 5 个被 ChatItemUpdate 取代的旧 `processOpencode*` handler，-333 行；4 个 lifecycle 处理器保留）
 - **#82 Bug J** — 推理块出现在 chat 末尾（bullet-pointed text）。根因调查：opencode v1.15.13 偶发漏发 `reasoning-end` 事件，但 `cleanup()`（`processor.ts:390-396`）会兜底 fire `updatePart` 触发 `message.part.updated` 走 plugin → 我们 handler 正常 emit。Bug J 间歇性，本轮跑 2 个 task 9 段 reasoning 全部正常内联 emit。本地验证方法：诊断 log 保留长期。
 - **f139350** — `chore(opencode): document unbounded session-scoped state`（已 commit）
 - **6c56af0** — `feat(opencode): full event stream + subagent routing`（已 commit）
@@ -61,6 +62,9 @@
   - `Nook/Services/Hooks/HookSocketServer.swift`（Unix socket 接收）
 - **诊断日志**：`/tmp/nook-debug.log`（设置面板有 toggle，#60 commit 加的）
 - **关键 commit 参考**:
+  - `a29076a` — `chore(opencode): remove dead processOpencode* code superseded by ChatItemUpdate`
+  - `537f725` — `refactor(opencode): pass structured tool input for display alignment with Claude`
+  - `d36b782` — `fix(opencode): strip task_result XML wrapping from Agent tool output`
   - `f139350` — 状态泄漏文档
   - `6c56af0` — 完整事件流 + subagent routing
   - `c51f607` — suppress question tool parent text
