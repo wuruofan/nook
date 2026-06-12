@@ -77,7 +77,7 @@ OpenCode (目标):
 ## 不在本次范围
 
 - **structuredResult**: 需独立的 output 解析逻辑，后续任务
-- **旧 processOpencode* 清理**: 死代码，不影响功能，后续统一清理
+- **旧 processOpencode\* 清理**: ~~死代码，不影响功能，后续统一清理~~ 已完成（commit 中移除 5 个 chat-item 事件类型 + 5 个 handler；4 个 lifecycle 处理器仍保留）
 - **代码块语法高亮**: 独立问题，与 provider 无关
 
 ## 涉及文件

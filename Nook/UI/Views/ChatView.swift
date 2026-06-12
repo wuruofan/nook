@@ -1056,8 +1056,8 @@ struct ToolCallView: View {
                     }
                 } else if tool.kind == .read {
                     // Read tools: opencode's postTool does not carry the
-                    // structured result back (see
-                    // SessionStore.processOpencodeToolFinished), so
+                    // structured result back (see OpencodeChatItemAdapter
+                    // .postTool handling), so
                     // `statusDisplay.text` falls back to a literal
                     // "Completed" with no filename and no line count.
                     // The result collapses to a one-line row that is much

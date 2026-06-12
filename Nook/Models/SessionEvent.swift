@@ -51,28 +51,12 @@ enum SessionEvent: Sendable {
     /// An OpenCode session was created or resumed
     case opencodeSessionStarted(sessionId: String, cwd: String)
 
-    /// OpenCode submitted a user prompt for the current turn
-    case opencodePromptSubmitted(sessionId: String, cwd: String, prompt: String?)
-
     /// OpenCode session entered a working state (thinking or running a tool)
     case opencodeProcessingStarted(sessionId: String, cwd: String)
 
     /// OpenCode is showing an interactive prompt (ask_user_question) and
     /// waiting for the user to pick an option before the model can continue.
     case opencodeWaitingForUserInput(sessionId: String, cwd: String)
-
-    /// OpenCode assistant produced reasoning / thinking content (shown as a
-    /// thinking block above the final assistant text in the chat view)
-    case opencodeAssistantThinking(sessionId: String, cwd: String, text: String)
-
-    /// OpenCode assistant produced a text reply (one event per assistant message)
-    case opencodeAssistantText(sessionId: String, cwd: String, text: String)
-
-    /// OpenCode began running a tool (Bash, Read, Write, Edit, etc.)
-    case opencodeToolStarted(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?)
-
-    /// OpenCode finished running a tool
-    case opencodeToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String? = nil, error: String? = nil)
 
     /// OpenCode stopped the current turn
     case opencodeStopped(sessionId: String, cwd: String)
@@ -278,20 +262,10 @@ extension SessionEvent: CustomStringConvertible {
             return "codexStopped(session: \(sessionId.prefix(8)))"
         case .opencodeSessionStarted(let sessionId, _):
             return "opencodeSessionStarted(session: \(sessionId.prefix(8)))"
-        case .opencodePromptSubmitted(let sessionId, _, _):
-            return "opencodePromptSubmitted(session: \(sessionId.prefix(8)))"
         case .opencodeProcessingStarted(let sessionId, _):
             return "opencodeProcessingStarted(session: \(sessionId.prefix(8)))"
         case .opencodeWaitingForUserInput(let sessionId, _):
             return "opencodeWaitingForUserInput(session: \(sessionId.prefix(8)))"
-        case .opencodeAssistantThinking(let sessionId, _, _):
-            return "opencodeAssistantThinking(session: \(sessionId.prefix(8)))"
-        case .opencodeAssistantText(let sessionId, _, _):
-            return "opencodeAssistantText(session: \(sessionId.prefix(8)))"
-        case .opencodeToolStarted(let sessionId, _, let toolName, _, _):
-            return "opencodeToolStarted(session: \(sessionId.prefix(8)), tool: \(toolName))"
-        case .opencodeToolFinished(let sessionId, _, let toolName, _, _, _, _):
-            return "opencodeToolFinished(session: \(sessionId.prefix(8)), tool: \(toolName))"
         case .opencodeStopped(let sessionId, _):
             return "opencodeStopped(session: \(sessionId.prefix(8)))"
         case .permissionApproved(let sessionId, let toolUseId):
