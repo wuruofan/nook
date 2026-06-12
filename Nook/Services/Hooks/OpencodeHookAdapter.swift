@@ -842,7 +842,18 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         // ToolStateCompleted always carries `output`; ToolStateError carries
         // `error` instead (see opencode/src/session/message-v2.ts:300-333).
         // Read both so we can show the user a result body on real throws.
-        let output = state["output"] as? String
+        let rawOutput = state["output"] as? String
+        // Task tools: opencode wraps the subagent's final text in
+        //   <task id="…" state="…"><task_result>…</task_result></task>
+        // (see the bundled `Yr` formatter in ~/.opencode/bin/opencode and the
+        // matching `$t()` unwrapper opencode TUI uses to render it). Without
+        // this unwrap, the raw XML leaks into TaskResult.content and the
+        // Agent block in ChatView shows `<task id="…" state="completed">`
+        // as user-visible text. Apply only to task — other tools' output
+        // is opaque and may legitimately contain the literal substring.
+        let output: String? = (toolName == "task")
+            ? Self.unwrapTaskOutput(rawOutput)
+            : rawOutput
         let error = state["error"] as? String
 
         // Task tool on the parent side — this is the bridge between a parent
@@ -989,6 +1000,38 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         if let query = input["query"] as? String { return String(query.prefix(60)) }
         if let content = input["content"] as? String { return String(content.prefix(60)) }
         return toolName
+    }
+
+    /// Regex matching the `<task_result>…</task_result>` (or `<task_error>…
+    /// </task_error>`) body that opencode wraps task-tool output in. Mirrors
+    /// the `$t()` extractor opencode TUI uses (extracted from
+    /// `~/.opencode/bin/opencode` strings: the formatter is `Yr`, the
+    /// unwrapper uses `/<task_result>\s*([\s\S]*?)\s*<\/task_result>/`).
+    /// Capture group 1 is the tag name; group 2 is the inner content.
+    private static let taskOutputWrapRegex: NSRegularExpression = {
+        let pattern = #"<(task_result|task_error)>([\s\S]*?)</\1>"#
+        // swiftlint:disable:next force_try
+        return try! NSRegularExpression(pattern: pattern)
+    }()
+
+    /// Strip opencode's `<task id=…><task_result>…</task_result></task>`
+    /// wrapping from a task-tool output string. Returns the trimmed inner
+    /// text on a successful match; otherwise returns the input unchanged
+    /// (covers the no-wrap, malformed, and nil/empty cases, all of which
+    /// must round-trip safely so this stays a no-op for non-wrapped
+    /// outputs the user may eventually see).
+    ///
+    /// CALL ONLY for the `task` tool. Other tools' output is opaque and
+    /// could legitimately contain the literal substring.
+    static func unwrapTaskOutput(_ output: String?) -> String? {
+        guard let output, !output.isEmpty else { return output }
+        let nsRange = NSRange(output.startIndex..<output.endIndex, in: output)
+        guard let match = taskOutputWrapRegex.firstMatch(in: output, options: [], range: nsRange),
+              match.numberOfRanges >= 3,
+              let innerRange = Range(match.range(at: 2), in: output) else {
+            return output
+        }
+        return String(output[innerRange]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Parsed result of an image data URI.
