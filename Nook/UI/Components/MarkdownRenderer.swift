@@ -95,6 +95,8 @@ private struct BlockRenderer: View {
             unorderedListView(list)
         } else if let list = markup as? OrderedList {
             orderedListView(list)
+        } else if let table = markup as? Markdown.Table {
+            tableView(table)
         } else if markup is ThematicBreak {
             Divider()
                 .background(baseColor.opacity(0.3))
@@ -190,6 +192,47 @@ private struct BlockRenderer: View {
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func tableView(_ table: Markdown.Table) -> some View {
+        let alignments = table.columnAlignments
+        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+            // Header row
+            GridRow {
+                ForEach(Array(table.head.cells.enumerated()), id: \.offset) { colIdx, cell in
+                    cellContent(cell, bold: true)
+                        .gridColumnAlignment(alignmentFor(colIdx, alignments))
+                }
+            }
+            Divider()
+                .gridCellUnsizedAxes(.horizontal)
+
+            // Body rows
+            ForEach(Array(table.body.rows.enumerated()), id: \.offset) { _, row in
+                GridRow {
+                    ForEach(Array(row.cells.enumerated()), id: \.offset) { _, cell in
+                        cellContent(cell, bold: false)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func cellContent(_ cell: Markdown.Table.Cell, bold: Bool) -> some View {
+        InlineRenderer(children: Array(cell.inlineChildren), baseColor: baseColor, fontSize: fontSize)
+            .asText()
+            .fontWeight(bold ? .bold : .regular)
+    }
+
+    private func alignmentFor(_ col: Int, _ alignments: [Markdown.Table.ColumnAlignment?]) -> HorizontalAlignment {
+        guard col < alignments.count, let align = alignments[col] else { return .leading }
+        switch align {
+        case .left:   return .leading
+        case .center: return .center
+        case .right:  return .trailing
         }
     }
 }
