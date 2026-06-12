@@ -1186,7 +1186,12 @@ struct ToolCallView: View {
 
             // Result content (Edit always shows, others when expanded)
             // Edit tools bypass hasResult check - fallback in ToolResultContent renders from input params
-            if showContent && tool.status != .running && !tool.isSubagentContainer && (hasResult || tool.kind == .edit) {
+            // Subagent containers (task/Agent) are allowed to show their
+            // TaskResultContent when expanded, but should NOT show raw
+            // text output (which is the agent's final message — already
+            // visible in the subagent tools list).
+            let isSubagentWithResult = tool.isSubagentContainer && tool.structuredResult != nil
+            if showContent && tool.status != .running && (!tool.isSubagentContainer || isSubagentWithResult) && (hasResult || tool.kind == .edit) {
                 ToolResultContent(tool: tool)
                     .padding(.leading, 12)
                     .padding(.top, 4)

@@ -1057,6 +1057,29 @@ actor SessionStore {
                 if let structured = block.structuredResult {
                     existing.structuredResult = structured
                 }
+                // Auto-construct TaskResult for task/Agent tools when the
+                // provider doesn't supply one (OpenCode). This uses the
+                // subagent tracking data already available in SessionStore
+                // to populate the same fields Claude's JSONL provides.
+                if existing.isSubagentContainer && existing.structuredResult == nil {
+                    let statusString: String = {
+                        switch existing.status {
+                        case .success: return "completed"
+                        case .error: return "error"
+                        case .interrupted: return "interrupted"
+                        default: return "unknown"
+                        }
+                    }()
+                    existing.structuredResult = .task(TaskResult(
+                        agentId: update.id,
+                        status: statusString,
+                        content: existing.result ?? "",
+                        prompt: nil,
+                        totalDurationMs: nil,
+                        totalTokens: nil,
+                        totalToolUseCount: existing.subagentTools.isEmpty ? nil : existing.subagentTools.count
+                    ))
+                }
                 session.chatItems[idx] = ChatHistoryItem(
                     id: update.id,
                     type: .toolCall(existing),

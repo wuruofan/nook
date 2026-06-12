@@ -157,14 +157,20 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
                 mutation: .insert, provider: .opencode
             )]
 
-        case .preTool(let sid, _, let toolName, let toolUseId, let inputSummary, let messageId):
+        case .preTool(let sid, _, let toolName, let toolUseId, let inputSummary, let fullInput, let messageId):
             let toolId = toolUseId ?? makeFallbackToolId(sessionId: sid)
             let msgId = messageId ?? lookupMessageId(for: sid)
             let idx = nextBlockIndex(sessionId: sid, messageId: msgId)
             let input: [String: String] = {
+                // Task tools: preserve description key for subagent container display
                 if ToolCallItem.kind(of: toolName) == .task, let desc = inputSummary?.trimmingCharacters(in: .whitespacesAndNewlines) {
                     return ["description": String(desc.prefix(80))]
                 }
+                // Use full structured input when available (mirrors Claude's tool.input)
+                if !fullInput.isEmpty {
+                    return fullInput
+                }
+                // Fallback for events that predate the input parameter
                 return inputSummary.map { ["command": $0] } ?? [:]
             }()
             return [ChatItemUpdate(

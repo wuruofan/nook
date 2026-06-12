@@ -871,7 +871,9 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             Self.logNotice("→ task preTool session=\(sessionId) callID=\(callId) child=\(childId ?? "<none>") newlyLinked=\(wasNewlyLinked)")
             let pre: OpencodeSessionEvent = .preTool(
                 sessionId: sessionId, cwd: cwd,
-                toolName: toolName, toolUseId: callId, inputSummary: inputSummary, messageId: messageId
+                toolName: toolName, toolUseId: callId, inputSummary: inputSummary,
+                input: Self.stringifyInput(input ?? [:]),
+                messageId: messageId
             )
             if let childId, wasNewlyLinked {
                 return [.subagentStarted(sessionId: sessionId, taskToolId: callId), pre]
@@ -935,7 +937,9 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         case "running":
             return [.preTool(
                 sessionId: sessionId, cwd: cwd,
-                toolName: toolName, toolUseId: callId, inputSummary: inputSummary, messageId: messageId
+                toolName: toolName, toolUseId: callId, inputSummary: inputSummary,
+                input: Self.stringifyInput(input ?? [:]),
+                messageId: messageId
             )]
         case "completed":
             return [.postTool(
@@ -1000,6 +1004,34 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         if let query = input["query"] as? String { return String(query.prefix(60)) }
         if let content = input["content"] as? String { return String(content.prefix(60)) }
         return toolName
+    }
+
+    /// Convert opencode's [String: Any] tool input to the [String: String]
+    /// format that ChatItemToolCall.input expects (matching Claude's
+    /// ToolUseBlock.input). Most values are strings; nested dicts/arrays
+    /// are JSON-encoded so downstream consumers (MCPToolFormatter,
+    /// EditInputDiffView) can parse them if needed.
+    private static func stringifyInput(_ input: [String: Any]) -> [String: String] {
+        var result: [String: String] = [:]
+        for (key, value) in input {
+            switch value {
+            case let s as String:
+                result[key] = s
+            case let b as Bool:
+                result[key] = String(b)
+            case let n as NSNumber:
+                result[key] = n.stringValue
+            default:
+                // Nested dict/array — JSON encode for downstream parsing
+                if let data = try? JSONSerialization.data(withJSONObject: value),
+                   let json = String(data: data, encoding: .utf8) {
+                    result[key] = json
+                } else {
+                    result[key] = String(describing: value)
+                }
+            }
+        }
+        return result
     }
 
     /// Regex matching the `<task_result>…</task_result>` (or `<task_error>…
