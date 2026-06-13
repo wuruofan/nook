@@ -33,6 +33,7 @@ final class NowPlayingController: MediaControllerProtocol {
     private var streamProcess: Process?
     private var streamPipeHandler: JSONLinesPipeHandler?
     private var streamTask: Task<Void, Never>?
+    private var initialRefreshTask: Task<Void, Never>?
     private var pendingOptimisticToggle: PendingOptimisticToggle?
 
     var playbackStatePublisher: AnyPublisher<PlaybackState, Never> {
@@ -41,9 +42,11 @@ final class NowPlayingController: MediaControllerProtocol {
 
     init() {
         startStreamingUpdates()
+        scheduleInitialRefreshes()
     }
 
     deinit {
+        initialRefreshTask?.cancel()
         streamTask?.cancel()
 
         if let streamProcess, streamProcess.isRunning {
@@ -62,21 +65,14 @@ extension NowPlayingController {
     func refresh() {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            guard let result = await self.runAdapter(arguments: ["get"], context: "refresh") else { return }
-
-            guard result.terminationStatus == 0 else {
-                self.logger.error("Adapter refresh failed with status \(result.terminationStatus)")
-                return
-            }
-
-            self.applySnapshot(from: result.data)
+            await self.refreshSnapshot(context: "refresh")
         }
     }
 
     func restartStreaming() {
         cleanupStream()
         startStreamingUpdates()
-        refresh()
+        scheduleInitialRefreshes()
     }
 
     func togglePlayPause(displayedTime: TimeInterval?) {
@@ -170,6 +166,27 @@ private extension NowPlayingController {
         }
     }
 
+    private func scheduleInitialRefreshes() {
+        initialRefreshTask?.cancel()
+        initialRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            await self.refreshSnapshot(context: "initial-refresh")
+
+            for delay in [0.75, 1.5] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled else { return }
+                guard self.needsInitialRefreshRetry else { return }
+                await self.refreshSnapshot(context: "initial-refresh-retry")
+            }
+        }
+    }
+
+    private var needsInitialRefreshRetry: Bool {
+        let state = subject.value
+        return !state.hasDisplayableContent || state.artworkData == nil
+    }
+
     private func cleanupStream() {
         streamTask?.cancel()
         streamTask = nil
@@ -185,6 +202,19 @@ private extension NowPlayingController {
             }
         }
         streamPipeHandler = nil
+    }
+
+    @discardableResult
+    private func refreshSnapshot(context: String) async -> Bool {
+        guard let result = await runAdapter(arguments: ["get"], context: context) else { return false }
+
+        guard result.terminationStatus == 0 else {
+            logger.error("Adapter refresh failed with status \(result.terminationStatus)")
+            return false
+        }
+
+        applySnapshot(from: result.data)
+        return true
     }
 
     private func sendCommand(_ command: AdapterCommand, displayedTime: TimeInterval? = nil) {

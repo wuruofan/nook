@@ -50,8 +50,24 @@ struct NotchView: View {
         if sessionMonitor.instances.contains(where: { $0.provider == .claude && ($0.phase == .processing || $0.phase == .compacting) }) {
             return .claude
         }
-        if sessionMonitor.instances.contains(where: { $0.provider == .codex && $0.phase == .processing }) {
+        if sessionMonitor.instances.contains(where: { $0.provider == .codex && ($0.phase == .processing || $0.phase == .compacting) }) {
             return .codex
+        }
+        if sessionMonitor.instances.contains(where: { $0.provider == .opencode && ($0.phase == .processing || $0.phase == .compacting) }) {
+            return .opencode
+        }
+        return nil
+    }
+
+    private var activePendingPermissionActivityType: NotchActivityType? {
+        if sessionMonitor.instances.contains(where: { $0.provider == .claude && $0.phase.isWaitingForApproval }) {
+            return .claude
+        }
+        if sessionMonitor.instances.contains(where: { $0.provider == .codex && $0.phase.isWaitingForApproval }) {
+            return .codex
+        }
+        if sessionMonitor.instances.contains(where: { $0.provider == .opencode && $0.phase.isWaitingForApproval }) {
+            return .opencode
         }
         return nil
     }
@@ -95,7 +111,7 @@ struct NotchView: View {
         // Expand for processing activity
         if activityCoordinator.expandingActivity.show {
             switch activityCoordinator.expandingActivity.type {
-            case .claude, .codex:
+            case .claude, .codex, .opencode:
                 return baseExpansion + permissionIndicatorWidth
             case .none:
                 break
@@ -270,18 +286,22 @@ struct NotchView: View {
     // MARK: - Notch Layout
 
     private var isProcessing: Bool {
-        activityCoordinator.expandingActivity.show &&
-            (activityCoordinator.expandingActivity.type == .claude || activityCoordinator.expandingActivity.type == .codex)
-    }
+        guard activityCoordinator.expandingActivity.show else { return false }
 
-    private var isCodexProcessing: Bool {
-        activityCoordinator.expandingActivity.show && activityCoordinator.expandingActivity.type == .codex
+        switch activityCoordinator.expandingActivity.type {
+        case .claude, .codex, .opencode:
+            return true
+        case .none:
+            return false
+        }
     }
 
     private var activeLoadingProvider: SessionProvider {
         switch activityCoordinator.expandingActivity.type {
         case .codex:
             return .codex
+        case .opencode:
+            return .opencode
         case .claude, .none:
             return .claude
         }
@@ -425,14 +445,20 @@ struct NotchView: View {
             // Left side - icons at natural size
             if showClosedActivity {
                 HStack(spacing: 4) {
-                    if isCodexProcessing {
+                    if activityCoordinator.expandingActivity.type == .codex {
                         CodexPulseIcon(size: 14, color: activityTint, isAnimating: true)
                             .padding(1)
-                            .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: showClosedActivity)
+                            .matchedGeometryEffect(id: "agent-icon", in: activityNamespace, isSource: showClosedActivity)
+                    } else if activityCoordinator.expandingActivity.type == .opencode {
+                        Image(systemName: SessionProvider.opencode.systemImage)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(activityTint)
+                            .frame(width: 16, height: 16)
+                            .matchedGeometryEffect(id: "agent-icon", in: activityNamespace, isSource: showClosedActivity)
                     } else {
                         ClaudeCrabIcon(size: 14, color: activityTint, animateLegs: isProcessing)
                             .padding(1)
-                            .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: showClosedActivity)
+                            .matchedGeometryEffect(id: "agent-icon", in: activityNamespace, isSource: showClosedActivity)
                     }
 
                     if hasPendingPermission {
@@ -476,20 +502,6 @@ struct NotchView: View {
     @ViewBuilder
     private var openedHeaderContent: some View {
         HStack(spacing: 12) {
-            // Show static crab only if not showing activity in headerRow
-            // (headerRow handles crab + indicator when showClosedActivity is true)
-            if !showClosedActivity {
-                if activityCoordinator.expandingActivity.type == .codex {
-                    CodexPulseIcon(size: 14, color: Color(red: 0.34, green: 0.64, blue: 0.98))
-                        .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: !showClosedActivity)
-                        .padding(.leading, 8)
-                } else {
-                    ClaudeCrabIcon(size: 14)
-                        .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: !showClosedActivity)
-                        .padding(.leading, 8)
-                }
-            }
-
             Spacer()
 
             // Menu toggle
@@ -594,8 +606,7 @@ struct NotchView: View {
 
     private func handleProcessingChange() {
         if isAnyProcessing || hasPendingPermission {
-            // Claude approval remains Claude-styled; otherwise follow the active provider.
-            let activityType: NotchActivityType = hasPendingPermission ? .claude : (activeProcessingActivityType ?? .claude)
+            let activityType = activePendingPermissionActivityType ?? activeProcessingActivityType ?? .claude
             activityCoordinator.showActivity(type: activityType)
             isVisible = true
         } else if showMusicActivity {

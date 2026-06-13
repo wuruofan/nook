@@ -14,6 +14,7 @@ import SwiftUI
 enum NotchActivityType: Equatable {
     case claude      // Claude is processing
     case codex       // Codex is processing
+    case opencode    // OpenCode is processing
     case none
 }
 

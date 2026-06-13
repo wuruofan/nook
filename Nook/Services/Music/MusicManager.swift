@@ -59,7 +59,9 @@ final class MusicManager: ObservableObject {
             }
             .store(in: &cancellables)
 
-        self.controller.refresh()
+        if controller != nil {
+            self.controller.refresh()
+        }
     }
 
     var isVisible: Bool {
