@@ -654,9 +654,47 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         let isKnownReasoning = knownReasoningMessageIds.contains(messageId)
         if !isReasoningFinalized && (isKnownReasoning || field == "reasoning") {
             pendingReasoningByMessage[messageId, default: ""] += delta
-        } else {
-            pendingTextByMessage[messageId, default: ""] += delta
+            messageSession[messageId] = sessionId
+            lock.unlock()
+            return []
         }
+
+        // Trailing-echo detection on the delta path (Bug H extension).
+        // opencode v1.15.13 sometimes streams the user-prompt echo as a series
+        // of `message.part.delta field=text` deltas on a reasoning messageID
+        // after reasoning is finalized. These deltas never fire a final
+        // `part.updated type=text` event, so `handleTextPart`'s check is
+        // bypassed. Detect here by comparing the cumulative buffer against the
+        // prompt after each delta. Once the buffer matches, drop everything
+        // and clear.
+        let isReasoningMessage = knownReasoningMessageIds.contains(messageId)
+            || emittedReasoningMessages.contains(messageId)
+        var echoCheck: (candidate: String, detector: TrailingEchoDetector)? = nil
+        if isReasoningMessage {
+            let prompt = consumedUserPromptBySession[sessionId] ?? ""
+            let pTrim = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !pTrim.isEmpty {
+                let currentBuffer = pendingTextByMessage[messageId] ?? ""
+                if currentBuffer.count + delta.count <= max(pTrim.count + 10, pTrim.count * 2) {
+                    let candidate = currentBuffer + delta
+                    let reasoningContent = pendingReasoningByMessage[messageId]
+                    echoCheck = (candidate, TrailingEchoDetector(userPrompt: prompt, reasoningContent: reasoningContent))
+                }
+            }
+        }
+        lock.unlock()
+
+        if let check = echoCheck, check.detector.isEcho(check.candidate) {
+            lock.lock()
+            pendingTextByMessage.removeValue(forKey: messageId)
+            messageSession[messageId] = sessionId
+            lock.unlock()
+            Self.logNotice("→ text delta suppressed (trailing-echo accumulated) session=\(sessionId) messageID=\(messageId) bufferChars=\(check.candidate.count)")
+            return []
+        }
+
+        lock.lock()
+        pendingTextByMessage[messageId, default: ""] += delta
         messageSession[messageId] = sessionId
         lock.unlock()
         return []
@@ -692,10 +730,26 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         // opencode sometimes emits a second `message.part.updated(type=text)`
         // on the same messageID after the first was already consumed above.
         // Without this guard the text falls through to the assistant buffer.
+        //
+        // EXCEPTION: opencode v1.15.13 occasionally sends a system-reminder
+        // as the first text part (`<system-reminder>Note: The user opened...`)
+        // and the real user prompt as the second. If the first was a
+        // system-reminder and the second is the actual prompt, update the
+        // stored prompt and re-emit.
         lock.lock()
         let wasConsumedUserMsg = consumedUserMessageIDs.contains(messageId)
+        let existingPrompt = consumedUserPromptBySession[sessionId] ?? ""
         lock.unlock()
         if wasConsumedUserMsg {
+            let isSystemReminder = existingPrompt.hasPrefix("<system-reminder>")
+            let isRealPrompt = !text.hasPrefix("<system-reminder>") && text.count > existingPrompt.count
+            if isSystemReminder && isRealPrompt {
+                lock.lock()
+                consumedUserPromptBySession[sessionId] = text
+                lock.unlock()
+                Self.logNotice("→ userPromptSubmit (corrected) session=\(sessionId) messageID=\(messageId) textChars=\(text.count) priorChars=\(existingPrompt.count)")
+                return [.userPromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: text, messageId: messageId)]
+            }
             Self.logNotice("→ text part skipped (already consumed as user) session=\(sessionId) messageID=\(messageId)")
             return []
         }
@@ -706,32 +760,28 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         //
         // opencode v1.15.13 sometimes emits a trailing `message.part.updated
         // type=text` on the SAME messageID that already carried a reasoning
-        // part. That trailing text typically echoes the user prompt and must
-        // be dropped (the safety-net duplicate-thinking bug the user
-        // reported, where the 3.1s thinking was re-displayed as a
-        // bullet-point assistantText after the turn ended).
+        // part. That trailing text typically echoes the user prompt or the
+        // reasoning content and must be dropped (Bug H: the 3.1s thinking
+        // was re-displayed as a bullet-point assistantText after the turn
+        // ended).
         //
         // #78: the previous carve-out used `bufferAlreadySeeded` (delta
         // count) as the trigger, which over-suppressed legitimate post-
         // reasoning text when opencode v1.15.13 emitted final-text without
-        // streaming deltas. Replace with content-based echo detection:
-        // compare the candidate text against the most recently consumed
-        // user prompt for this session. Match → echo (drop). No match →
-        // legitimate text (write to buffer).
+        // streaming deltas. The second attempt used substring matching
+        // (`t == p || p.contains(t) || t.contains(p)`) which was too greedy
+        // ("weather" + "The weather is sunny" false-positive). Now uses
+        // TrailingEchoDetector: exact match + length-bounded Levenshtein,
+        // no substring.
         lock.lock()
         let isReasoningMessage = knownReasoningMessageIds.contains(messageId)
             || emittedReasoningMessages.contains(messageId)
-        let promptChars: Int = consumedUserPromptBySession[sessionId]?.count ?? 0
-        let echoesUserPrompt: Bool = {
-            guard let prompt = consumedUserPromptBySession[sessionId] else { return false }
-            let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            let p = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !p.isEmpty, !t.isEmpty else { return false }
-            return t == p || p.contains(t) || t.contains(p)
-        }()
+        let prompt = consumedUserPromptBySession[sessionId] ?? ""
+        let reasoningContent = pendingReasoningByMessage[messageId]
         lock.unlock()
-        if isReasoningMessage && echoesUserPrompt {
-            Self.logNotice("→ text part suppressed (trailing-echo of user prompt) session=\(sessionId) messageID=\(messageId) textChars=\(text.count) promptChars=\(promptChars)")
+        let isEcho = isReasoningMessage && TrailingEchoDetector(userPrompt: prompt, reasoningContent: reasoningContent).isEcho(text)
+        if isEcho {
+            Self.logNotice("→ text part suppressed (trailing-echo) session=\(sessionId) messageID=\(messageId) textChars=\(text.count) promptChars=\(prompt.count)")
             return []
         }
         if !text.isEmpty {
