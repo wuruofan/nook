@@ -10,9 +10,10 @@
 //    session.updated        → sessionStart on first sighting; refreshes cwd afterwards
 //    session.status         → stop on status.type == "idle"
 //    session.idle           → stop (legacy)
-//    question.asked         → waitingForUserInput (opencode v1.15.13 ONLY;
-//                              see handleQuestionAsked — v1.17.x does NOT
-//                              fire this event, fallback path below)
+//    question.asked         → waitingForUserInput (verified 2026-06-17 to
+//                              fire in v1.17.x; handleQuestionAsked is the
+//                              primary path, handleToolPart has a
+//                              defensive fallback below)
 //    message.updated        → user/assistant message boundary
 //    message.part.updated   → user text, assistant text (initial empty), bash tool
 //    message.part.delta     → assistant text streaming chunks (field=text)
@@ -22,17 +23,23 @@
 //    message.part.delta(field=text, delta=...)  → append chunks
 //    message.updated(role=assistant, finish=stop) → flush buffer as .assistantText
 //
-//  AskUserQuestion phase — the v1.15.13 `question.asked` event was
-//  reported by reverse-engineering but does NOT actually fire in v1.17.x
-//  (verified 2026-06-17 — log only shows `file.watcher.updated` events,
-//  no `question.asked`). We therefore derive `.waitingForUserInput` from
-//  `message.part.updated(type=tool, tool=question)` in handleToolPart
-//  (see switch below). The `handleQuestionAsked` path is kept as
-//  forward-looking code for the v1.15.13 case but is NOT the primary
-//  detection path. If a future opencode version starts firing this event
-//  again, handleQuestionAsked will run alongside the tool-part detection
-//  (idempotent — both set .waitingForInput which is a no-op if already
-//  in that phase).
+//  AskUserQuestion phase — two redundant detection paths converge on
+//  the same `.waitingForUserInput` event:
+//    1. handleQuestionAsked (line ~498) — primary path, listens for
+//       opencode's `question.asked` bus event. Verified firing in
+//       v1.17.x (2026-06-17, log shows [opencode] event type=question.asked).
+//       Earlier during this session we observed runs where this event
+//       was missing from the log — likely timing/connection issues
+//       (e.g. opencode hadn't fully started, plugin socket hadn't
+//       bound yet), NOT that the event doesn't exist.
+//    2. handleToolPart (line ~1036) — defensive fallback, derives the
+//       phase from the standard `message.part.updated(type=tool,
+//       tool=question)` event. Kept because:
+//         - The two paths are idempotent (both set .waitingForInput)
+//         - If question.asked ever fails to reach us (transport loss,
+//           version regression, plugin breakage), the list view still
+//           gets the correct phase
+//         - It's "evidence-driven" detection from events we KNOW fire
 //
 
 import Foundation
@@ -488,23 +495,18 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             lock.unlock()
             return v
         }()
-        // opencode v1.15.13 was reported to fire `question.asked` exactly
-        // when the ask_user_question dialog appears. From opencode's
-        // perspective the session is still "busy" (session.status stays
-        // busy until the user answers), so without this explicit signal
-        // the notch would keep showing the orange processing indicator
-        // while the user is being asked to pick an option.
+        // opencode fires `question.asked` exactly when the
+        // ask_user_question dialog appears. From opencode's perspective
+        // the session is still "busy" (session.status stays busy until
+        // the user answers), so without this explicit signal the notch
+        // would keep showing the orange processing indicator while the
+        // user is being asked to pick an option.
         //
-        // ⚠ v1.17.x compatibility note (verified 2026-06-17): this event
-        // does NOT actually fire in v1.17.x. The plugin only sees
-        // `file.watcher.updated` events from opencode — no `question.asked`.
-        // We therefore DO NOT rely on this handler for v1.17.x; the primary
-        // detection path is `handleToolPart` (line ~1018) which detects
-        // `message.part.updated(type=tool, tool=question)` and emits
-        // `.waitingForUserInput` alongside the standard `preTool` event.
-        // This handler is kept as forward-looking code for the v1.15.13
-        // case and as a no-op safety net for v1.17.x (it just returns
-        // early when the event never arrives).
+        // Verified 2026-06-17: this event DOES fire in opencode v1.17.x
+        // (log: [opencode] event type=question.asked). Earlier in this
+        // session we observed runs where the event was absent — that
+        // was likely a timing/connection issue (opencode hadn't fully
+        // started, plugin socket hadn't bound), NOT a missing event.
         //
         // The event payload (opencode/src/question/index.ts:35-45, `Request`
         // schema) also carries `tool: { messageID, callID }` when the
@@ -520,6 +522,11 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         // The `question.asked` payload carries `tool.messageID` for the
         // parent — that's what we mark here so the parent's `assistantText`
         // is dropped before the safety-net flush has a chance to emit it.
+        //
+        // This handler is the PRIMARY detection path; handleToolPart has
+        // a defensive fallback (line ~1036) that derives the phase from
+        // `message.part.updated(type=tool, tool=question)` if this event
+        // ever fails to arrive. The two paths are idempotent.
         if let tool = props["tool"]?.value as? [String: Any],
            let messageId = tool["messageID"] as? String,
            !messageId.isEmpty {
@@ -1033,23 +1040,23 @@ final class OpencodeHookAdapter: @unchecked Sendable {
                 input: Self.stringifyInput(input ?? [:]),
                 messageId: messageId
             )
-            // AskUserQuestion phase — PRIMARY detection path for v1.17.x.
+            // AskUserQuestion phase — DEFENSIVE FALLBACK (handleQuestionAsked
+            // is the primary path; this catches cases where the
+            // `question.asked` event is lost or not yet wired up).
             //
-            // We derive `.waitingForUserInput` from the standard tool event
-            // here, NOT from `question.asked` (which doesn't fire in
-            // v1.17.x — see file header comment). When opencode invokes
-            // its `question` tool, it sends a `message.part.updated`
-            // event with `part.type=tool` and `part.tool=question`. We
-            // detect that here and emit `.waitingForUserInput` alongside
-            // the standard `.preTool` so the list view shows the green
-            // flag icon instead of the processing spinner.
+            // When opencode invokes its `question` tool, it sends a
+            // `message.part.updated` event with `part.type=tool` and
+            // `part.tool=question`. We detect that here and emit
+            // `.waitingForUserInput` alongside the standard `.preTool` so
+            // the list view shows the green flag icon even if the
+            // dedicated `question.asked` event didn't reach us.
             //
-            // The `handleQuestionAsked` path (line ~498) is the v1.15.13
-            // primary path but is a no-op in v1.17.x because the event
-            // never arrives. Both paths converge on the same
-            // `.waitingForUserInput` event, so they're idempotent — if
-            // a future opencode version starts firing `question.asked`
-            // again, the phase will simply be set twice (idempotent).
+            // Verified 2026-06-17: in normal operation `question.asked`
+            // fires and this path is redundant (idempotent — both set
+            // `.waitingForInput` which is a no-op if already in that
+            // phase). Kept as defense in depth: if opencode ever changes
+            // its event model, or the plugin socket drops the event, the
+            // list view still gets the correct phase.
             if toolName.lowercased() == "question" || toolName.lowercased() == "askuserquestion" {
                 return [preToolEvent, .waitingForUserInput(sessionId: sessionId, cwd: cwd)]
             }
