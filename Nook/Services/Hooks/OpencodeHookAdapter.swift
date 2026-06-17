@@ -1001,12 +1001,20 @@ final class OpencodeHookAdapter: @unchecked Sendable {
 
         switch status {
         case "running":
-            return [.preTool(
+            let preToolEvent: OpencodeSessionEvent = .preTool(
                 sessionId: sessionId, cwd: cwd,
                 toolName: toolName, toolUseId: callId, inputSummary: inputSummary,
                 input: Self.stringifyInput(input ?? [:]),
                 messageId: messageId
-            )]
+            )
+            // Emit waitingForUserInput for the question tool so the list
+            // view shows the green flag icon instead of the processing
+            // spinner. opencode v1.15.13 should fire `question.asked` for
+            // this, but some versions don't — this is a safety net.
+            if toolName.lowercased() == "question" || toolName.lowercased() == "askuserquestion" {
+                return [preToolEvent, .waitingForUserInput(sessionId: sessionId, cwd: cwd)]
+            }
+            return [preToolEvent]
         case "completed":
             return [.postTool(
                 sessionId: sessionId, cwd: cwd,

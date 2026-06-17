@@ -631,8 +631,12 @@ actor SessionStore {
         // Idempotent: if already processing, phase.canTransition allows it
         // (processing → processing is a no-op). Covers both thinking and
         // tool-running phases; the first call wins.
+        DebugLog.shared.write("[opencode-phase] processingStarted session=\(sessionId.prefix(8)) currentPhase=\(session.phase)")
         if session.phase.canTransition(to: .processing) {
             session.phase = .processing
+            DebugLog.shared.write("[opencode-phase] processingStarted → phase set to .processing")
+        } else {
+            DebugLog.shared.write("[opencode-phase] processingStarted → transition rejected from \(session.phase)")
         }
         sessions[sessionId] = session
         publishState()
@@ -647,8 +651,12 @@ actor SessionStore {
         // waiting on them). Transition is allowed from .processing by the
         // state machine; from .idle, .waitingForInput is also reachable.
         session.completionNotificationAt = nil
+        DebugLog.shared.write("[opencode-phase] waitingForUserInput session=\(sessionId.prefix(8)) currentPhase=\(session.phase)")
         if session.phase.canTransition(to: .waitingForInput) {
             session.phase = .waitingForInput
+            DebugLog.shared.write("[opencode-phase] waitingForUserInput → phase set to .waitingForInput")
+        } else {
+            DebugLog.shared.write("[opencode-phase] waitingForUserInput → transition rejected from \(session.phase)")
         }
         sessions[sessionId] = session
         publishState()
