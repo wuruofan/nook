@@ -1582,10 +1582,14 @@ struct ChatInteractivePromptBar: View {
                     Text("Terminal")
                         .font(.system(size: 13, weight: .medium))
                 }
-                .foregroundColor(canFocusTerminal ? Color.black.opacity(0.88) : secondaryTextColor)
+                .foregroundColor(canFocusTerminal ? Color.white : secondaryTextColor)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                .background(canFocusTerminal ? primaryTextColor.opacity(0.92) : secondaryTextColor.opacity(0.16))
+                // Use a fixed dark background regardless of theme — adaptive
+                // background mode sets `primaryTextColor` to a dark color
+                // (e.g. black on light theme), which would make the button
+                // invisible with the previous black-on-primaryTextColor scheme.
+                .background(canFocusTerminal ? Color.black.opacity(0.85) : secondaryTextColor.opacity(0.16))
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)
