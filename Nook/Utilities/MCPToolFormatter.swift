@@ -9,8 +9,14 @@ import Foundation
 
 struct MCPToolFormatter {
 
-    /// Tool aliases for friendlier display names
+    /// Tool aliases for friendlier display names.
+    ///
+    /// Provider-specific names map to the same alias so the UI is
+    /// consistent regardless of provider. Claude emits PascalCase
+    /// ("AskUserQuestion"), OpenCode emits lowercase ("question"),
+    /// and both should render as "Question".
     private static let toolAliases: [String: String] = [
+        // Provider-specific (Claude PascalCase)
         "AgentOutputTool": "Await Agent",
         "AskUserQuestion": "Question",
         "TodoWrite": "Todo",
@@ -23,6 +29,14 @@ struct MCPToolFormatter {
         "EnterPlanMode": "Plan",
         "ExitPlanMode": "Plan",
         "SlashCommand": "Command",
+        // Provider-specific (OpenCode lowercase)
+        "question": "Question",
+        "todowrite": "Todo",
+        "webfetch": "Fetch",
+        "websearch": "Search",
+        "bashoutput": "Bash",
+        "killshell": "Shell",
+        // Shared (both providers)
         "task": "Agent",
         "skill": "Skill",
     ]

@@ -110,6 +110,17 @@ struct ToolUseBlock: Equatable {
         if let pattern = input["pattern"] {
             return pattern
         }
+        // AskUserQuestion: extract first question text + option count hint
+        if name == "AskUserQuestion", let questionsJson = input["questions"],
+           let data = questionsJson.data(using: .utf8),
+           let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+           let firstQuestion = array.first?["question"] as? String {
+            let optionCount = (array.first?["options"] as? [[String: Any]])?.count ?? 0
+            if optionCount > 0 {
+                return String("\(firstQuestion) (\(optionCount) 个选项)".prefix(50))
+            }
+            return String(firstQuestion.prefix(50))
+        }
         return input.values.first.map { String($0.prefix(50)) } ?? ""
     }
 }

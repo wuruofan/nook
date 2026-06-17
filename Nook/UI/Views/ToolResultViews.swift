@@ -51,12 +51,42 @@ struct ToolResultContent: View {
         } else if tool.kind == .edit {
             // Special fallback for Edit - show diff from input params
             EditInputDiffView(input: tool.input)
+        } else if tool.kind == .askUserQuestion,
+                  let questionsJson = tool.input["questions"],
+                  let result = Self.parseQuestionsInput(questionsJson) {
+            // Defensive fallback: AskUserQuestion input-based rendering
+            // when structuredResult is nil (e.g. tool rejected).
+            AskUserQuestionResultContent(result: result)
         } else if let result = tool.result {
             // Fallback to raw text display
             GenericTextContent(text: result)
         } else {
             EmptyView()
         }
+    }
+
+    /// Parse AskUserQuestion questions from JSON-serialized input string.
+    /// Mirrors `ClaudeChatItemAdapter.buildAskUserResult(from:)` logic for
+    /// the UI-side fallback path.
+    static func parseQuestionsInput(_ json: String) -> AskUserQuestionResult? {
+        guard let data = json.data(using: .utf8),
+              let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return nil }
+
+        let questions: [QuestionItem] = array.compactMap { q in
+            guard let question = q["question"] as? String else { return nil }
+            var options: [QuestionOption] = []
+            if let optsArray = q["options"] as? [[String: Any]] {
+                options = optsArray.compactMap { opt in
+                    guard let label = opt["label"] as? String else { return nil }
+                    return QuestionOption(label: label, description: opt["description"] as? String)
+                }
+            }
+            return QuestionItem(question: question, header: q["header"] as? String, options: options)
+        }
+
+        guard !questions.isEmpty else { return nil }
+        return AskUserQuestionResult(questions: questions, answers: [:])
     }
 }
 
@@ -465,16 +495,57 @@ struct AskUserQuestionResultContent: View {
     let result: AskUserQuestionResult
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(result.questions.enumerated()), id: \.offset) { index, question in
                 VStack(alignment: .leading, spacing: 4) {
+                    // Header (optional category label)
+                    if let header = question.header {
+                        Text(header)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.4))
+                            .textCase(.uppercase)
+                    }
+
                     // Question
                     Text(question.question)
                         .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.white.opacity(0.7))
 
-                    // Answer
-                    if let answer = result.answers["\(index)"] {
+                    // Options
+                    if !question.options.isEmpty {
+                        VStack(alignment: .leading, spacing: 3) {
+                            ForEach(Array(question.options.enumerated()), id: \.offset) { optIndex, option in
+                                let isSelected = result.answers["\(index)"] == option.label
+                                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                    Text(letterLabel(for: optIndex))
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(isSelected ? .green.opacity(0.8) : .white.opacity(0.5))
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(option.label)
+                                            .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                                            .foregroundColor(isSelected ? .green.opacity(0.9) : .white.opacity(0.7))
+                                        if let desc = option.description, !desc.isEmpty {
+                                            Text(desc)
+                                                .font(.system(size: 10))
+                                                .foregroundColor(.white.opacity(0.35))
+                                                .lineLimit(2)
+                                        }
+                                    }
+                                    if isSelected {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(.green.opacity(0.8))
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.leading, 4)
+                    }
+
+                    // Answer (for providers that return answer text directly
+                    // instead of matching an option label)
+                    if let answer = result.answers["\(index)"],
+                       !question.options.contains(where: { $0.label == answer }) {
                         HStack(spacing: 4) {
                             Image(systemName: "arrow.turn.down.right")
                                 .font(.system(size: 9))
@@ -486,6 +557,11 @@ struct AskUserQuestionResultContent: View {
                 }
             }
         }
+    }
+
+    /// Generate A/B/C/D... label for an option index.
+    private func letterLabel(for index: Int) -> String {
+        String(UnicodeScalar(65 + index)!) // 65 = "A"
     }
 }
 

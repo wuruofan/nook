@@ -10,6 +10,10 @@
 //    session.updated        → sessionStart on first sighting; refreshes cwd afterwards
 //    session.status         → stop on status.type == "idle"
 //    session.idle           → stop (legacy)
+//    question.asked         → waitingForUserInput (verified 2026-06-17 to
+//                              fire in v1.17.x; handleQuestionAsked is the
+//                              primary path, handleToolPart has a
+//                              defensive fallback below)
 //    message.updated        → user/assistant message boundary
 //    message.part.updated   → user text, assistant text (initial empty), bash tool
 //    message.part.delta     → assistant text streaming chunks (field=text)
@@ -18,6 +22,24 @@
 //    message.part.updated(type=text, text="")   → initialise buffer for messageID
 //    message.part.delta(field=text, delta=...)  → append chunks
 //    message.updated(role=assistant, finish=stop) → flush buffer as .assistantText
+//
+//  AskUserQuestion phase — two redundant detection paths converge on
+//  the same `.waitingForUserInput` event:
+//    1. handleQuestionAsked (line ~498) — primary path, listens for
+//       opencode's `question.asked` bus event. Verified firing in
+//       v1.17.x (2026-06-17, log shows [opencode] event type=question.asked).
+//       Earlier during this session we observed runs where this event
+//       was missing from the log — likely timing/connection issues
+//       (e.g. opencode hadn't fully started, plugin socket hadn't
+//       bound yet), NOT that the event doesn't exist.
+//    2. handleToolPart (line ~1036) — defensive fallback, derives the
+//       phase from the standard `message.part.updated(type=tool,
+//       tool=question)` event. Kept because:
+//         - The two paths are idempotent (both set .waitingForInput)
+//         - If question.asked ever fails to reach us (transport loss,
+//           version regression, plugin breakage), the list view still
+//           gets the correct phase
+//         - It's "evidence-driven" detection from events we KNOW fire
 //
 
 import Foundation
@@ -44,45 +66,16 @@ final class OpencodeHookAdapter: @unchecked Sendable {
     private static var lock = NSLock()
 
     // TODO(perf): All `private static var` state declared below is
-    // session-scoped (or message-scoped within a session) and is
-    // NEVER cleared when the corresponding session ends. Nook is
-    // typically a long-running menubar app — these maps grow for the
-    // lifetime of the process. Practical impact today is small
-    // (MB-scale at most for power users; correctness is unaffected
-    // because opencode messageIDs are globally unique and not
-    // reused), but it is a strict memory leak and would become a
-    // problem if Nook ever became a system service.
+    // session-scoped (or message-scoped within a session) and was
+    // previously NEVER cleared when the corresponding session ends.
+    // Cleanup is now implemented in `cleanupState(forSession:)`, called
+    // from `handleSessionStatus(idle)` and `handleSessionIdle`.
     //
-    // Cleanup hook: `handleSessionIdle` and the `session.status=idle`
-    // / `session.status=ended` branches in the dispatcher are the
-    // canonical places. On cleanup, drop per-session entries from
-    // the dicts and filter the global Sets through `messageSession`
-    // (or change the Sets to `[sessionId: Set<messageID>]` for O(1)
-    // removal). State to clear, grouped by cleanup strategy:
-    //
-    //   Per-session dicts — single `removeValue(forKey:)`:
-    //     - sessionCwd
-    //     - latestUserMsgID
-    //     - subagentToParent            (key is the child sessionId)
-    //     - subagentTaskToolId          (key is the child sessionId)
-    //     - parentAwaitingTask          (key is the parent sessionId)
-    //
-    //   Message-scoped dicts — filter by `messageSession[messageID]`:
-    //     - pendingTextByMessage
-    //     - pendingReasoningByMessage
-    //     - messageSession              (the reverse map itself)
-    //
-    //   Global Sets keyed by messageID — filter by `messageSession`,
-    //   or convert to per-session dicts for O(1) removal:
-    //     - emittedTextMessages
-    //     - suppressedTextMessages
-    //     - knownReasoningMessageIds
-    //     - emittedReasoningMessages
-    //
-    //   Global Set keyed by callID — no session mapping today;
-    //   tracking `callID → sessionId` is needed before this can be
-    //   cleaned per-session:
-    //     - runningToolCallIds
+    // State that remains unbounded (cannot be cleaned per-session):
+    //   - runningToolCallIds: keyed by callID, no session mapping;
+    //     tracking `callID → sessionId` would be needed. Low risk
+    //     because the set is bounded by active tool calls only
+    //     (entries are removed on completed/error).
 
     /// sessionID → cwd from session.created / session.updated
     private static var sessionCwd: [String: String] = [:]
@@ -310,6 +303,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
                 return v
             }()
             let flushed = flushPendingText(forSession: childId, cwd: cwd)
+            cleanupState(forSession: childId)
             Self.logNotice("→ subagent stop routed to parent child=\(childId) parent=\(parentId) flushed=\(flushed.count)")
             return flushed
 
@@ -437,6 +431,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             // Safety net: flush any assistant text buffers that didn't get a finish=stop
             var events: [OpencodeSessionEvent] = flushPendingText(forSession: sessionId, cwd: cwd)
             events.append(.stop(sessionId: sessionId, cwd: cwd))
+            cleanupState(forSession: sessionId)
             Self.logNotice("→ stop session=\(sessionId) flushed=\(events.count - 1)")
             return events
         default:
@@ -452,8 +447,44 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             lock.unlock()
             return v
         }()
+        cleanupState(forSession: sessionId)
         Self.logNotice("→ stop (legacy session.idle) session=\(sessionId)")
         return [.stop(sessionId: sessionId, cwd: cwd)]
+    }
+
+    private static func cleanupState(forSession sessionId: String) {
+        lock.lock()
+        // Per-session dicts — direct removal
+        sessionCwd.removeValue(forKey: sessionId)
+        latestUserMsgID.removeValue(forKey: sessionId)
+        consumedUserPromptBySession.removeValue(forKey: sessionId)
+        preRegistrationEventCount.removeValue(forKey: sessionId)
+        parentAwaitingTask.removeValue(forKey: sessionId)
+
+        // Subagent dicts — sessionId may be a child or a parent
+        subagentToParent.removeValue(forKey: sessionId)
+        subagentTaskToolId.removeValue(forKey: sessionId)
+        // Also remove child entries whose parent is this session
+        subagentToParent = subagentToParent.filter { $0.value != sessionId }
+        subagentTaskToolId = subagentTaskToolId.filter { $0.value != sessionId }
+
+        // Message-scoped — collect messageIDs belonging to this session
+        let messagesToRemove = messageSession.filter { $0.value == sessionId }.map(\.key)
+        for messageId in messagesToRemove {
+            pendingTextByMessage.removeValue(forKey: messageId)
+            pendingReasoningByMessage.removeValue(forKey: messageId)
+            messageSession.removeValue(forKey: messageId)
+            emittedTextMessages.remove(messageId)
+            suppressedTextMessages.remove(messageId)
+            knownReasoningMessageIds.remove(messageId)
+            emittedReasoningMessages.remove(messageId)
+            reasoningFinalizedMessageIds.remove(messageId)
+            consumedUserMessageIDs.remove(messageId)
+        }
+        lock.unlock()
+        if !messagesToRemove.isEmpty {
+            Self.logNotice("→ cleanup session=\(sessionId) messages=\(messagesToRemove.count)")
+        }
     }
 
     private static func handleQuestionAsked(_ props: [String: AnyCodable]) -> [OpencodeSessionEvent] {
@@ -464,12 +495,18 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             lock.unlock()
             return v
         }()
-        // opencode v1.15.13 fires `question.asked` exactly when the
-        // ask_user_question dialog appears. From opencode's perspective the
-        // session is still "busy" (session.status stays busy until the user
-        // answers), so without this explicit signal the notch would keep
-        // showing the orange processing indicator while the user is being
-        // asked to pick an option.
+        // opencode fires `question.asked` exactly when the
+        // ask_user_question dialog appears. From opencode's perspective
+        // the session is still "busy" (session.status stays busy until
+        // the user answers), so without this explicit signal the notch
+        // would keep showing the orange processing indicator while the
+        // user is being asked to pick an option.
+        //
+        // Verified 2026-06-17: this event DOES fire in opencode v1.17.x
+        // (log: [opencode] event type=question.asked). Earlier in this
+        // session we observed runs where the event was absent — that
+        // was likely a timing/connection issue (opencode hadn't fully
+        // started, plugin socket hadn't bound), NOT a missing event.
         //
         // The event payload (opencode/src/question/index.ts:35-45, `Request`
         // schema) also carries `tool: { messageID, callID }` when the
@@ -485,6 +522,11 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         // The `question.asked` payload carries `tool.messageID` for the
         // parent — that's what we mark here so the parent's `assistantText`
         // is dropped before the safety-net flush has a chance to emit it.
+        //
+        // This handler is the PRIMARY detection path; handleToolPart has
+        // a defensive fallback (line ~1036) that derives the phase from
+        // `message.part.updated(type=tool, tool=question)` if this event
+        // ever fails to arrive. The two paths are idempotent.
         if let tool = props["tool"]?.value as? [String: Any],
            let messageId = tool["messageID"] as? String,
            !messageId.isEmpty {
@@ -597,6 +639,19 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             return handleReasoningPart(sessionId: sessionId, cwd: cwd, part: part)
         case "tool":
             return handleToolPart(sessionId: sessionId, cwd: cwd, part: part)
+        case "file":
+            // Opencode sends user-attached images as file parts with a
+            // data URI in the `url` field: data:image/png;base64,xxxx
+            // Extract the base64 payload and emit an image event.
+            let messageId = part["messageID"] as? String  // nil preserves downstream fallback
+            let fileUrl = part["url"] as? String ?? ""
+            if let parsed = Self.parseImageDataURI(fileUrl) {
+                Self.logNotice("→ file part → image session=\(sessionId) messageID=\(messageId ?? "-") mime=\(parsed.mediaType) dataLen=\(parsed.base64Data.count)")
+                return [.image(sessionId: sessionId, cwd: cwd, mediaType: parsed.mediaType, base64Data: parsed.base64Data, messageId: messageId)]
+            } else {
+                Self.logNotice("→ file part skipped (not a valid image data URI) session=\(sessionId) url=\(String(fileUrl.prefix(60)))")
+                return []
+            }
         case "step-start":
             // Defensive backup: opencode v1.15.13 sometimes fires step-start
             // before any session.status=busy event (e.g. when the model is
@@ -641,9 +696,47 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         let isKnownReasoning = knownReasoningMessageIds.contains(messageId)
         if !isReasoningFinalized && (isKnownReasoning || field == "reasoning") {
             pendingReasoningByMessage[messageId, default: ""] += delta
-        } else {
-            pendingTextByMessage[messageId, default: ""] += delta
+            messageSession[messageId] = sessionId
+            lock.unlock()
+            return []
         }
+
+        // Trailing-echo detection on the delta path (Bug H extension).
+        // opencode v1.15.13 sometimes streams the user-prompt echo as a series
+        // of `message.part.delta field=text` deltas on a reasoning messageID
+        // after reasoning is finalized. These deltas never fire a final
+        // `part.updated type=text` event, so `handleTextPart`'s check is
+        // bypassed. Detect here by comparing the cumulative buffer against the
+        // prompt after each delta. Once the buffer matches, drop everything
+        // and clear.
+        let isReasoningMessage = knownReasoningMessageIds.contains(messageId)
+            || emittedReasoningMessages.contains(messageId)
+        var echoCheck: (candidate: String, detector: TrailingEchoDetector)? = nil
+        if isReasoningMessage {
+            let prompt = consumedUserPromptBySession[sessionId] ?? ""
+            let pTrim = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !pTrim.isEmpty {
+                let currentBuffer = pendingTextByMessage[messageId] ?? ""
+                if currentBuffer.count + delta.count <= max(pTrim.count + 10, pTrim.count * 2) {
+                    let candidate = currentBuffer + delta
+                    let reasoningContent = pendingReasoningByMessage[messageId]
+                    echoCheck = (candidate, TrailingEchoDetector(userPrompt: prompt, reasoningContent: reasoningContent))
+                }
+            }
+        }
+        lock.unlock()
+
+        if let check = echoCheck, check.detector.isEcho(check.candidate) {
+            lock.lock()
+            pendingTextByMessage.removeValue(forKey: messageId)
+            messageSession[messageId] = sessionId
+            lock.unlock()
+            Self.logNotice("→ text delta suppressed (trailing-echo accumulated) session=\(sessionId) messageID=\(messageId) bufferChars=\(check.candidate.count)")
+            return []
+        }
+
+        lock.lock()
+        pendingTextByMessage[messageId, default: ""] += delta
         messageSession[messageId] = sessionId
         lock.unlock()
         return []
@@ -679,10 +772,26 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         // opencode sometimes emits a second `message.part.updated(type=text)`
         // on the same messageID after the first was already consumed above.
         // Without this guard the text falls through to the assistant buffer.
+        //
+        // EXCEPTION: opencode v1.15.13 occasionally sends a system-reminder
+        // as the first text part (`<system-reminder>Note: The user opened...`)
+        // and the real user prompt as the second. If the first was a
+        // system-reminder and the second is the actual prompt, update the
+        // stored prompt and re-emit.
         lock.lock()
         let wasConsumedUserMsg = consumedUserMessageIDs.contains(messageId)
+        let existingPrompt = consumedUserPromptBySession[sessionId] ?? ""
         lock.unlock()
         if wasConsumedUserMsg {
+            let isSystemReminder = existingPrompt.hasPrefix("<system-reminder>")
+            let isRealPrompt = !text.hasPrefix("<system-reminder>") && text.count > existingPrompt.count
+            if isSystemReminder && isRealPrompt {
+                lock.lock()
+                consumedUserPromptBySession[sessionId] = text
+                lock.unlock()
+                Self.logNotice("→ userPromptSubmit (corrected) session=\(sessionId) messageID=\(messageId) textChars=\(text.count) priorChars=\(existingPrompt.count)")
+                return [.userPromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: text, messageId: messageId)]
+            }
             Self.logNotice("→ text part skipped (already consumed as user) session=\(sessionId) messageID=\(messageId)")
             return []
         }
@@ -693,32 +802,28 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         //
         // opencode v1.15.13 sometimes emits a trailing `message.part.updated
         // type=text` on the SAME messageID that already carried a reasoning
-        // part. That trailing text typically echoes the user prompt and must
-        // be dropped (the safety-net duplicate-thinking bug the user
-        // reported, where the 3.1s thinking was re-displayed as a
-        // bullet-point assistantText after the turn ended).
+        // part. That trailing text typically echoes the user prompt or the
+        // reasoning content and must be dropped (Bug H: the 3.1s thinking
+        // was re-displayed as a bullet-point assistantText after the turn
+        // ended).
         //
         // #78: the previous carve-out used `bufferAlreadySeeded` (delta
         // count) as the trigger, which over-suppressed legitimate post-
         // reasoning text when opencode v1.15.13 emitted final-text without
-        // streaming deltas. Replace with content-based echo detection:
-        // compare the candidate text against the most recently consumed
-        // user prompt for this session. Match → echo (drop). No match →
-        // legitimate text (write to buffer).
+        // streaming deltas. The second attempt used substring matching
+        // (`t == p || p.contains(t) || t.contains(p)`) which was too greedy
+        // ("weather" + "The weather is sunny" false-positive). Now uses
+        // TrailingEchoDetector: exact match + length-bounded Levenshtein,
+        // no substring.
         lock.lock()
         let isReasoningMessage = knownReasoningMessageIds.contains(messageId)
             || emittedReasoningMessages.contains(messageId)
-        let promptChars: Int = consumedUserPromptBySession[sessionId]?.count ?? 0
-        let echoesUserPrompt: Bool = {
-            guard let prompt = consumedUserPromptBySession[sessionId] else { return false }
-            let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            let p = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !p.isEmpty, !t.isEmpty else { return false }
-            return t == p || p.contains(t) || t.contains(p)
-        }()
+        let prompt = consumedUserPromptBySession[sessionId] ?? ""
+        let reasoningContent = pendingReasoningByMessage[messageId]
         lock.unlock()
-        if isReasoningMessage && echoesUserPrompt {
-            Self.logNotice("→ text part suppressed (trailing-echo of user prompt) session=\(sessionId) messageID=\(messageId) textChars=\(text.count) promptChars=\(promptChars)")
+        let isEcho = isReasoningMessage && TrailingEchoDetector(userPrompt: prompt, reasoningContent: reasoningContent).isEcho(text)
+        if isEcho {
+            Self.logNotice("→ text part suppressed (trailing-echo) session=\(sessionId) messageID=\(messageId) textChars=\(text.count) promptChars=\(prompt.count)")
             return []
         }
         if !text.isEmpty {
@@ -829,7 +934,18 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         // ToolStateCompleted always carries `output`; ToolStateError carries
         // `error` instead (see opencode/src/session/message-v2.ts:300-333).
         // Read both so we can show the user a result body on real throws.
-        let output = state["output"] as? String
+        let rawOutput = state["output"] as? String
+        // Task tools: opencode wraps the subagent's final text in
+        //   <task id="…" state="…"><task_result>…</task_result></task>
+        // (see the bundled `Yr` formatter in ~/.opencode/bin/opencode and the
+        // matching `$t()` unwrapper opencode TUI uses to render it). Without
+        // this unwrap, the raw XML leaks into TaskResult.content and the
+        // Agent block in ChatView shows `<task id="…" state="completed">`
+        // as user-visible text. Apply only to task — other tools' output
+        // is opaque and may legitimately contain the literal substring.
+        let output: String? = (toolName == "task")
+            ? Self.unwrapTaskOutput(rawOutput)
+            : rawOutput
         let error = state["error"] as? String
 
         // Task tool on the parent side — this is the bridge between a parent
@@ -847,14 +963,16 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             Self.logNotice("→ task preTool session=\(sessionId) callID=\(callId) child=\(childId ?? "<none>") newlyLinked=\(wasNewlyLinked)")
             let pre: OpencodeSessionEvent = .preTool(
                 sessionId: sessionId, cwd: cwd,
-                toolName: toolName, toolUseId: callId, inputSummary: inputSummary, messageId: messageId
+                toolName: toolName, toolUseId: callId, inputSummary: inputSummary,
+                input: Self.stringifyInput(input ?? [:]),
+                messageId: messageId
             )
             if let childId, wasNewlyLinked {
                 return [.subagentStarted(sessionId: sessionId, taskToolId: callId), pre]
             }
             return [pre]
         }
-        if toolName == "task", let callId, status == "completed" {
+        if toolName == "task", let callId, status == "completed" || status == "error" {
             if let childId = disassociateTaskFromChild(parentId: sessionId, taskToolId: callId) {
                 Self.logNotice("→ task postTool session=\(sessionId) callID=\(callId) child=\(childId) → subagentStopped")
                 // The task postTool is the parent's signal that the subagent
@@ -900,6 +1018,13 @@ final class OpencodeHookAdapter: @unchecked Sendable {
                 }
                 runningToolCallIds.remove(callId)
                 log.notice("→ postTool session=\(sessionId) callID=\(callId) tool=\(toolName) outputLen=\(output?.count ?? 0) errorLen=\(error?.count ?? 0)")
+            case "error":
+                guard runningToolCallIds.contains(callId) else {
+                    log.notice("→ postTool (error) for unknown callID, skipping session=\(sessionId) callID=\(callId)")
+                    return []
+                }
+                runningToolCallIds.remove(callId)
+                log.notice("→ postTool (error) session=\(sessionId) callID=\(callId) tool=\(toolName) errorLen=\(error?.count ?? 0)")
             default:
                 return []
             }
@@ -909,15 +1034,44 @@ final class OpencodeHookAdapter: @unchecked Sendable {
 
         switch status {
         case "running":
-            return [.preTool(
+            let preToolEvent: OpencodeSessionEvent = .preTool(
                 sessionId: sessionId, cwd: cwd,
-                toolName: toolName, toolUseId: callId, inputSummary: inputSummary, messageId: messageId
-            )]
+                toolName: toolName, toolUseId: callId, inputSummary: inputSummary,
+                input: Self.stringifyInput(input ?? [:]),
+                messageId: messageId
+            )
+            // AskUserQuestion phase — DEFENSIVE FALLBACK (handleQuestionAsked
+            // is the primary path; this catches cases where the
+            // `question.asked` event is lost or not yet wired up).
+            //
+            // When opencode invokes its `question` tool, it sends a
+            // `message.part.updated` event with `part.type=tool` and
+            // `part.tool=question`. We detect that here and emit
+            // `.waitingForUserInput` alongside the standard `.preTool` so
+            // the list view shows the green flag icon even if the
+            // dedicated `question.asked` event didn't reach us.
+            //
+            // Verified 2026-06-17: in normal operation `question.asked`
+            // fires and this path is redundant (idempotent — both set
+            // `.waitingForInput` which is a no-op if already in that
+            // phase). Kept as defense in depth: if opencode ever changes
+            // its event model, or the plugin socket drops the event, the
+            // list view still gets the correct phase.
+            if toolName.lowercased() == "question" || toolName.lowercased() == "askuserquestion" {
+                return [preToolEvent, .waitingForUserInput(sessionId: sessionId, cwd: cwd)]
+            }
+            return [preToolEvent]
         case "completed":
             return [.postTool(
                 sessionId: sessionId, cwd: cwd,
                 toolName: toolName, toolUseId: callId, inputSummary: inputSummary,
                 output: output, error: error, messageId: messageId
+            )]
+        case "error":
+            return [.postTool(
+                sessionId: sessionId, cwd: cwd,
+                toolName: toolName, toolUseId: callId, inputSummary: inputSummary,
+                output: nil, error: error, messageId: messageId
             )]
         default:
             return []
@@ -976,6 +1130,108 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         if let query = input["query"] as? String { return String(query.prefix(60)) }
         if let content = input["content"] as? String { return String(content.prefix(60)) }
         return toolName
+    }
+
+    /// Convert opencode's [String: Any] tool input to the [String: String]
+    /// format that ChatItemToolCall.input expects (matching Claude's
+    /// ToolUseBlock.input). Most values are strings; nested dicts/arrays
+    /// are JSON-encoded so downstream consumers (MCPToolFormatter,
+    /// EditInputDiffView) can parse them if needed.
+    private static func stringifyInput(_ input: [String: Any]) -> [String: String] {
+        var result: [String: String] = [:]
+        for (key, value) in input {
+            switch value {
+            case let s as String:
+                result[key] = s
+            case let b as Bool:
+                result[key] = String(b)
+            case let n as NSNumber:
+                result[key] = n.stringValue
+            default:
+                // Nested dict/array — JSON encode for downstream parsing
+                if let data = try? JSONSerialization.data(withJSONObject: value),
+                   let json = String(data: data, encoding: .utf8) {
+                    result[key] = json
+                } else {
+                    result[key] = String(describing: value)
+                }
+            }
+        }
+        return result
+    }
+
+    /// Regex matching the `<task_result>…</task_result>` (or `<task_error>…
+    /// </task_error>`) body that opencode wraps task-tool output in. Mirrors
+    /// the `$t()` extractor opencode TUI uses (extracted from
+    /// `~/.opencode/bin/opencode` strings: the formatter is `Yr`, the
+    /// unwrapper uses `/<task_result>\s*([\s\S]*?)\s*<\/task_result>/`).
+    /// Capture group 1 is the tag name; group 2 is the inner content.
+    private static let taskOutputWrapRegex: NSRegularExpression = {
+        let pattern = #"<(task_result|task_error)>([\s\S]*?)</\1>"#
+        // swiftlint:disable:next force_try
+        return try! NSRegularExpression(pattern: pattern)
+    }()
+
+    /// Strip opencode's `<task id=…><task_result>…</task_result></task>`
+    /// wrapping from a task-tool output string. Returns the trimmed inner
+    /// text on a successful match; otherwise returns the input unchanged
+    /// (covers the no-wrap, malformed, and nil/empty cases, all of which
+    /// must round-trip safely so this stays a no-op for non-wrapped
+    /// outputs the user may eventually see).
+    ///
+    /// CALL ONLY for the `task` tool. Other tools' output is opaque and
+    /// could legitimately contain the literal substring.
+    static func unwrapTaskOutput(_ output: String?) -> String? {
+        guard let output, !output.isEmpty else { return output }
+        let nsRange = NSRange(output.startIndex..<output.endIndex, in: output)
+        guard let match = taskOutputWrapRegex.firstMatch(in: output, options: [], range: nsRange),
+              match.numberOfRanges >= 3,
+              let innerRange = Range(match.range(at: 2), in: output) else {
+            return output
+        }
+        return String(output[innerRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Parsed result of an image data URI.
+    struct ImageDataURI {
+        let mediaType: String   // e.g. "image/png"
+        let base64Data: String
+    }
+
+    /// Parse a data URI and extract image data.
+    /// Returns nil if:
+    /// - Not a valid data URI format
+    /// - Content type is not an image (rejects audio, video, etc.)
+    /// - Base64 payload is empty or contains invalid characters
+    private static func parseImageDataURI(_ uri: String) -> ImageDataURI? {
+        guard uri.hasPrefix("data:") else { return nil }
+        guard let commaIndex = uri.firstIndex(of: ",") else { return nil }
+
+        // Parse header: "data:image/png;base64"
+        let header = String(uri[uri.index(after: uri.startIndex)..<commaIndex])
+        let parts = header.split(separator: ";")
+        guard let contentType = parts.first, !contentType.isEmpty else { return nil }
+
+        // Only accept image/* content types
+        guard contentType.hasPrefix("image/") else { return nil }
+
+        // Verify base64 encoding marker
+        guard parts.dropFirst().contains("base64") else { return nil }
+
+        // Extract and validate base64 payload
+        let base64Start = uri.index(after: commaIndex)
+        let base64 = String(uri[base64Start...])
+        guard !base64.isEmpty else { return nil }
+
+        // Basic validation: base64 should only contain valid characters
+        // (alphanumeric, +, /, =, and whitespace which we strip)
+        let stripped = base64.filter { !$0.isWhitespace }
+        let validBase64Chars = CharacterSet.alphanumerics
+            .union(CharacterSet(charactersIn: "+/="))
+        guard stripped.unicodeScalars.allSatisfy({ validBase64Chars.contains($0) }) else { return nil }
+        guard stripped.count % 4 == 0 else { return nil }  // base64 length must be multiple of 4
+
+        return ImageDataURI(mediaType: String(contentType), base64Data: stripped)
     }
 
     /// Flush one message's text buffer as a single .assistantText event.

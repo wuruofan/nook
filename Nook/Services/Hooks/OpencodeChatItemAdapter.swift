@@ -107,7 +107,7 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
     private func isChatItemEvent(_ event: OpencodeSessionEvent) -> Bool {
         switch event {
         case .userPromptSubmitted, .assistantThinking, .assistantText,
-             .preTool, .postTool:
+             .preTool, .postTool, .image:
             return true
         case .sessionStart, .processingStarted, .waitingForUserInput, .stop,
              .subagentStarted, .subagentToolExecuted, .subagentToolCompleted, .subagentStopped:
@@ -127,7 +127,7 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
             return [ChatItemUpdate(
                 id: id, sessionId: sid,
                 block: .userPrompt(text),
-                ordering: .messageRelative(messageId: msgId, typePriority: Self.typePriority(for: .userPrompt(text)), blockIndex: idx),
+                ordering: .messageRelative(messageId: msgId, typePriority: BlockTypePriority.forBlock(.userPrompt(text)), blockIndex: idx),
                 mutation: .insert, provider: .opencode
             )]
 
@@ -140,7 +140,7 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
             return [ChatItemUpdate(
                 id: id, sessionId: sid,
                 block: .thinking(trimmed),
-                ordering: .messageRelative(messageId: msgId, typePriority: Self.typePriority(for: .thinking(trimmed)), blockIndex: idx),
+                ordering: .messageRelative(messageId: msgId, typePriority: BlockTypePriority.forBlock(.thinking(trimmed)), blockIndex: idx),
                 mutation: .insert, provider: .opencode
             )]
 
@@ -153,18 +153,24 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
             return [ChatItemUpdate(
                 id: id, sessionId: sid,
                 block: .assistantText(trimmed),
-                ordering: .messageRelative(messageId: msgId, typePriority: Self.typePriority(for: .assistantText(trimmed)), blockIndex: idx),
+                ordering: .messageRelative(messageId: msgId, typePriority: BlockTypePriority.forBlock(.assistantText(trimmed)), blockIndex: idx),
                 mutation: .insert, provider: .opencode
             )]
 
-        case .preTool(let sid, _, let toolName, let toolUseId, let inputSummary, let messageId):
+        case .preTool(let sid, _, let toolName, let toolUseId, let inputSummary, let fullInput, let messageId):
             let toolId = toolUseId ?? makeFallbackToolId(sessionId: sid)
             let msgId = messageId ?? lookupMessageId(for: sid)
             let idx = nextBlockIndex(sessionId: sid, messageId: msgId)
             let input: [String: String] = {
+                // Task tools: preserve description key for subagent container display
                 if ToolCallItem.kind(of: toolName) == .task, let desc = inputSummary?.trimmingCharacters(in: .whitespacesAndNewlines) {
                     return ["description": String(desc.prefix(80))]
                 }
+                // Use full structured input when available (mirrors Claude's tool.input)
+                if !fullInput.isEmpty {
+                    return fullInput
+                }
+                // Fallback for events that predate the input parameter
                 return inputSummary.map { ["command": $0] } ?? [:]
             }()
             return [ChatItemUpdate(
@@ -175,7 +181,7 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
                     result: nil, structuredResult: nil,
                     subagentTools: []
                 )),
-                ordering: .messageRelative(messageId: msgId, typePriority: Self.typePriority(for: .toolCall(ChatItemToolCall(toolId: toolId, name: toolName, input: input, status: .running, result: nil, structuredResult: nil, subagentTools: []))), blockIndex: idx),
+                ordering: .messageRelative(messageId: msgId, typePriority: BlockTypePriority.forBlock(.toolCall(ChatItemToolCall(toolId: toolId, name: toolName, input: input, status: .running, result: nil, structuredResult: nil, subagentTools: []))), blockIndex: idx),
                 mutation: .insert, provider: .opencode
             )]
 
@@ -204,9 +210,21 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
                     result: resultBody, structuredResult: nil,
                     subagentTools: []
                 )),
-                ordering: .messageRelative(messageId: msgId, typePriority: 1, blockIndex: 0),
+                ordering: .messageRelative(messageId: msgId, typePriority: .action, blockIndex: 0),
                 mutation: .updateStatus, provider: .opencode,
                 isError: outputIsError
+            )]
+
+        case .image(let sid, _, let mediaType, let base64Data, let messageId):
+            let msgId = messageId ?? lookupMessageId(for: sid)
+            let idx = nextBlockIndex(sessionId: sid, messageId: msgId)
+            let imageBlock = ImageBlock(mediaType: mediaType, base64Data: base64Data)
+            let id = ChatItemIdFactory.opencodeBlockId(messageId: msgId, typePrefix: "image", blockIndex: idx)
+            return [ChatItemUpdate(
+                id: id, sessionId: sid,
+                block: .image(imageBlock),
+                ordering: .messageRelative(messageId: msgId, typePriority: BlockTypePriority.forBlock(.image(imageBlock)), blockIndex: idx),
+                mutation: .insert, provider: .opencode
             )]
 
         case .sessionStart, .processingStarted, .waitingForUserInput, .stop,
@@ -247,22 +265,6 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
         guard let output, !output.isEmpty else { return false }
         let tail = output.suffix(1024)
         return tail.contains("<bash_metadata>")
-    }
-
-    // MARK: - Type Priority
-
-    /// Logical ordering within a message: thinking before tools before text.
-    /// This ensures correct display order even when opencode streams events
-    /// out of logical sequence (e.g. tool events arriving before thinking).
-    private static func typePriority(for block: ChatItemBlock) -> Int {
-        switch block {
-        case .thinking:    return 0
-        case .toolCall:    return 1
-        case .assistantText: return 2
-        case .userPrompt:  return 0  // only block in its message
-        case .image:       return 1
-        case .interrupted: return 99
-        }
     }
 
 }

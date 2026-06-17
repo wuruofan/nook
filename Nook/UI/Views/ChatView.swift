@@ -29,6 +29,7 @@ struct ChatView: View {
     @State private var isBottomVisible: Bool = true
     @State private var codexTranscriptHistory: [ChatHistoryItem] = []
     @State private var isRefreshingCodexHistory: Bool = false
+    @State private var focusErrorMessage: String? = nil
 
     @FocusState private var isInputFocused: Bool
 
@@ -602,7 +603,8 @@ struct ChatView: View {
             canFocusTerminal: session.isInTmux || session.pid != nil,
             primaryTextColor: primaryTextColor,
             secondaryTextColor: secondaryTextColor,
-            onGoToTerminal: { focusTerminal() }
+            onGoToTerminal: { focusTerminal() },
+            focusErrorMessage: focusErrorMessage
         )
     }
 
@@ -624,32 +626,84 @@ struct ChatView: View {
     // MARK: - Actions
 
     private func focusTerminal() {
+        // Clear any previous error message before retrying
+        focusErrorMessage = nil
+
         Task {
-            // tmux path (Claude's default): the Yabai controller walks
-            // `client_pid → terminal` via tmux's own `list-clients` and
-            // focuses the right pane. Skipped silently if yabai isn't
-            // installed.
-            if session.isInTmux, let pid = session.pid {
-                if await YabaiController.shared.focusWindow(forClaudePid: pid) {
-                    return
-                }
-                _ = await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd)
-                return
-            }
-            // Non-tmux fallback (e.g. opencode running directly in Ghostty).
-            // Yabai focuses whole windows by PID; for a non-tmux shell we
-            // don't have a window handle, only the shell's PID. Walk the
-            // process tree up to the terminal app's PID and activate it
-            // via NSWorkspace — `activate(ignoringOtherApps:)` brings the
-            // terminal to the front so the user can interact with the
-            // opencode question popup.
-            if let pid = session.pid {
-                let activated = await focusTerminalApp(forChildPid: Int(pid))
-                if !activated {
-                    DebugLog.shared.write("[focus] non-tmux focus failed: could not find terminal app for pid=\(pid)")
-                }
+            DebugLog.shared.write("[focus] called session.isInTmux=\(session.isInTmux) session.pid=\(session.pid ?? -1) provider=\(session.provider)")
+
+            // Try each focus method in order; stop at the first success.
+            // Order: tmux (yabai) → non-tmux process tree → last-resort bundle ID.
+            let focusSucceeded = await tryFocusTerminal()
+
+            if focusSucceeded {
+                // Only close the notch AFTER we know the terminal has
+                // accepted focus. Closing on a failed focus leaves the
+                // user looking at nothing — they can't see the question
+                // prompt and they don't know why.
+                DebugLog.shared.write("[focus] success, closing notch and restoring focus")
+                viewModel.notchClose()
+            } else {
+                // All focus methods failed. Keep the notch open so the
+                // user can still see the question and try again (or use
+                // the fallback hint to start a tmux session). Set a
+                // visible error message that gets cleared on next click.
+                DebugLog.shared.write("[focus] all methods failed, keeping notch open")
+                focusErrorMessage = "无法聚焦终端。请手动切换窗口（session.pid 缺失或终端 app 不在已知列表）"
             }
         }
+    }
+
+    /// Try every terminal focus method in order; return true on first success.
+    /// Order: tmux (yabai) → non-tmux process tree → last-resort bundle ID.
+    private func tryFocusTerminal() async -> Bool {
+        // tmux path (Claude's default): the Yabai controller walks
+        // `client_pid → terminal` via tmux's own `list-clients` and
+        // focuses the right pane. Skipped silently if yabai isn't
+        // installed.
+        if session.isInTmux, let pid = session.pid {
+            if await YabaiController.shared.focusWindow(forClaudePid: pid) {
+                DebugLog.shared.write("[focus] tmux focusWindow(forClaudePid) succeeded")
+                return true
+            }
+            DebugLog.shared.write("[focus] tmux focusWindow(forClaudePid) failed, trying forWorkingDirectory")
+            if await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd) {
+                DebugLog.shared.write("[focus] tmux focusWindow(forWorkingDirectory) succeeded")
+                return true
+            }
+            DebugLog.shared.write("[focus] tmux path failed, falling through to non-tmux fallback")
+            // Fall through to non-tmux fallback — yabai may not be
+            // installed or the tmux lookup may have failed.
+        }
+        // Non-tmux fallback (e.g. opencode running directly in Ghostty).
+        // Yabai focuses whole windows by PID; for a non-tmux shell we
+        // don't have a window handle, only the shell's PID. Walk the
+        // process tree up to the terminal app's PID and activate it
+        // via NSWorkspace — `activate(ignoringOtherApps:)` brings the
+        // terminal to the front so the user can interact with the
+        // opencode question popup.
+        if let pid = session.pid {
+            if await focusTerminalApp(forChildPid: Int(pid)) {
+                DebugLog.shared.write("[focus] non-tmux focusTerminalApp succeeded")
+                return true
+            }
+            DebugLog.shared.write("[focus] non-tmux focusTerminalApp failed: could not find terminal app for pid=\(pid)")
+            // Last resort: try activating any known terminal app
+            // by bundle ID. Works when the process tree walk fails
+            // (e.g. Ghostty launched via launchd, PID namespace quirks).
+            let terminalBundleIds = ["com.mitchellh.ghostty", "com.googlecode.iterm2", "com.apple.Terminal"]
+            for bundleId in terminalBundleIds {
+                if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
+                    let ok = app.activate()
+                    DebugLog.shared.write("[focus] last-resort activate bundleId=\(bundleId) success=\(ok)")
+                    if ok { return true }
+                }
+            }
+            DebugLog.shared.write("[focus] all focus methods failed")
+        } else {
+            DebugLog.shared.write("[focus] session.pid is nil, cannot focus terminal")
+        }
+        return false
     }
 
     /// Walk up the process tree from `childPid` until we hit a known
@@ -947,7 +1001,15 @@ struct ToolCallView: View {
     }
 
     private var hasResult: Bool {
-        tool.result != nil || tool.structuredResult != nil
+        // AskUserQuestion: options are static content (parsed from tool
+        // input), so the item always has renderable content regardless of
+        // whether structuredResult is populated. This matters for OpenCode's
+        // hook path which doesn't set structuredResult until the tool
+        // completes — the user should still see options while waiting.
+        if tool.kind == .askUserQuestion { return true }
+
+        let hasNonEmptyResult = tool.result.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
+        return hasNonEmptyResult || tool.structuredResult != nil
     }
 
     /// Whether the tool can be expanded. Two cases:
@@ -1055,8 +1117,8 @@ struct ToolCallView: View {
                     }
                 } else if tool.kind == .read {
                     // Read tools: opencode's postTool does not carry the
-                    // structured result back (see
-                    // SessionStore.processOpencodeToolFinished), so
+                    // structured result back (see OpencodeChatItemAdapter
+                    // .postTool handling), so
                     // `statusDisplay.text` falls back to a literal
                     // "Completed" with no filename and no line count.
                     // The result collapses to a one-line row that is much
@@ -1164,8 +1226,13 @@ struct ToolCallView: View {
 
                 Spacer()
 
-                // Expand indicator (only for expandable tools)
-                if canExpand && tool.status != .running && tool.status != .waitingForApproval {
+                // Expand indicator (only for expandable tools).
+                // AskUserQuestion options are static (parsed from input),
+                // so always allow expanding regardless of status. Other
+                // tools hide the chevron while running/waitingForApproval
+                // because their result content isn't available yet.
+                let isAskQuestion = tool.kind == .askUserQuestion
+                if canExpand && (isAskQuestion || (tool.status != .running && tool.status != .waitingForApproval)) {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .medium))
                         .foregroundColor(secondaryTextColor.opacity(0.8))
@@ -1185,7 +1252,15 @@ struct ToolCallView: View {
 
             // Result content (Edit always shows, others when expanded)
             // Edit tools bypass hasResult check - fallback in ToolResultContent renders from input params
-            if showContent && tool.status != .running && !tool.isSubagentContainer && (hasResult || tool.kind == .edit) {
+            // Subagent containers (task/Agent) are allowed to show their
+            // TaskResultContent when expanded, but should NOT show raw
+            // text output (which is the agent's final message — already
+            // visible in the subagent tools list).
+            let isSubagentWithResult = tool.isSubagentContainer && tool.structuredResult != nil
+            // AskUserQuestion content (options) is static — allow showing
+            // even while the tool is still running/waiting for answer.
+            let isAskQuestion = tool.kind == .askUserQuestion
+            if showContent && (isAskQuestion || tool.status != .running) && (!tool.isSubagentContainer || isSubagentWithResult) && (hasResult || tool.kind == .edit) {
                 ToolResultContent(tool: tool)
                     .padding(.leading, 12)
                     .padding(.top, 4)
@@ -1485,6 +1560,9 @@ struct ChatInteractivePromptBar: View {
     let primaryTextColor: Color
     let secondaryTextColor: Color
     let onGoToTerminal: () -> Void
+    /// Error message shown when Terminal focus failed on the last click.
+    /// Cleared on next click. nil = no error.
+    let focusErrorMessage: String?
 
     @State private var showContent = false
     @State private var showButton = false
@@ -1505,6 +1583,16 @@ struct ChatInteractivePromptBar: View {
                         .font(.system(size: 10))
                         .foregroundColor(secondaryTextColor.opacity(0.7))
                         .lineLimit(1)
+                }
+                if let error = focusErrorMessage {
+                    // Show the most recent focus failure in red. Cleared
+                    // on next click (parent sets focusErrorMessage = nil
+                    // at the start of focusTerminal). Shown ABOVE the
+                    // button so the user can see why the click did nothing.
+                    Text(error)
+                        .font(.system(size: 10))
+                        .foregroundColor(.red.opacity(0.9))
+                        .lineLimit(2)
                 }
             }
             .opacity(showContent ? 1 : 0)
@@ -1537,10 +1625,14 @@ struct ChatInteractivePromptBar: View {
                     Text("Terminal")
                         .font(.system(size: 13, weight: .medium))
                 }
-                .foregroundColor(canFocusTerminal ? Color.black.opacity(0.88) : secondaryTextColor)
+                .foregroundColor(canFocusTerminal ? Color.white : secondaryTextColor)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                .background(canFocusTerminal ? primaryTextColor.opacity(0.92) : secondaryTextColor.opacity(0.16))
+                // Use a fixed dark background regardless of theme — adaptive
+                // background mode sets `primaryTextColor` to a dark color
+                // (e.g. black on light theme), which would make the button
+                // invisible with the previous black-on-primaryTextColor scheme.
+                .background(canFocusTerminal ? Color.black.opacity(0.85) : secondaryTextColor.opacity(0.16))
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)

@@ -112,26 +112,11 @@ actor SessionStore {
         case .opencodeSessionStarted(let sessionId, let cwd):
             processOpencodeSessionStart(sessionId: sessionId, cwd: cwd)
 
-        case .opencodePromptSubmitted(let sessionId, let cwd, let prompt):
-            processOpencodePromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: prompt)
-
         case .opencodeProcessingStarted(let sessionId, let cwd):
             processOpencodeProcessingStarted(sessionId: sessionId, cwd: cwd)
 
         case .opencodeWaitingForUserInput(let sessionId, let cwd):
             processOpencodeWaitingForUserInput(sessionId: sessionId, cwd: cwd)
-
-        case .opencodeAssistantThinking(let sessionId, let cwd, let text):
-            processOpencodeAssistantThinking(sessionId: sessionId, cwd: cwd, text: text)
-
-        case .opencodeAssistantText(let sessionId, let cwd, let text):
-            processOpencodeAssistantText(sessionId: sessionId, cwd: cwd, text: text)
-
-        case .opencodeToolStarted(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary):
-            processOpencodeToolStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary)
-
-        case .opencodeToolFinished(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary, let output, let error):
-            processOpencodeToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary, output: output, error: error)
 
         case .opencodeStopped(let sessionId, let cwd):
             processOpencodeStop(sessionId: sessionId, cwd: cwd)
@@ -210,6 +195,12 @@ actor SessionStore {
         let isNewSession = sessions[sessionId] == nil
         var session = sessions[sessionId] ?? createSession(from: event)
 
+        // DIAGNOSTIC (#14): log every hook event to /tmp/nook-debug.log so
+        // we can see whether PostToolUse actually fires after the user
+        // rejects AskUserQuestion in the terminal. If it doesn't, the chat
+        // view's "Waiting for approval" state will never clear.
+        DebugLog.shared.write("[hook-event] session=\(sessionId) event=\(event.event) status=\(event.status) tool=\(event.tool ?? "nil") toolUseId=\(event.toolUseId ?? "nil") notificationType=\(event.notificationType ?? "nil")")
+
         // Track new session in Mixpanel
         if isNewSession {
             mixpanel?.track(event: "Session Started")
@@ -241,6 +232,7 @@ actor SessionStore {
 
         if event.event == "PermissionRequest", let toolUseId = event.toolUseId {
             Self.logger.debug("Setting tool \(toolUseId.prefix(12), privacy: .public) status to waitingForApproval")
+            DebugLog.shared.write("[hook-tool-status] reason=permissionRequest session=\(sessionId) toolUseId=\(toolUseId) newStatus=waitingForApproval")
             updateToolStatus(in: &session, toolId: toolUseId, status: .waitingForApproval)
         }
 
@@ -383,7 +375,7 @@ actor SessionStore {
         // previous version always appended, which would stack a fresh
         // chatItem on every duplicate start and produce ~3 row-sized
         // blank gaps in the chat. Mirror the dedup shape used by
-        // `processOpencodeToolStarted` and `processToolTracking` (Claude).
+        // `processToolTracking` (Claude).
         if let idx = session.chatItems.firstIndex(where: { $0.id == toolId }),
            case .toolCall(let existing) = session.chatItems[idx].type {
             let updated = ToolCallItem(
@@ -628,43 +620,7 @@ actor SessionStore {
         if isNewSession {
             mixpanel?.track(event: "Session Started", properties: ["provider": "opencode"])
         }
-    }
-
-    private func processOpencodePromptSubmitted(sessionId: String, cwd: String, prompt: String?) {
-        var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
-        let now = Date()
-        let trimmedPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Update phase / activity / completion-notification BEFORE the
-        // empty-prompt guard. An opencode session that receives an empty
-        // user prompt (defensive case — adapter usually filters these)
-        // should still register as `.processing` so the UI doesn't stay
-        // stuck on a stale phase. Mirrors `processCodexPromptSubmitted`.
-        enrichOpencodeRuntimeMetadata(session: &session)
-        session.lastActivity = now
-        session.phase = .processing
-        session.completionNotificationAt = nil
-
-        if let prompt = trimmedPrompt, !prompt.isEmpty {
-            session.chatItems.append(
-                ChatHistoryItem(
-                    id: "opencode-prompt-\(sessionId)-\(Int(now.timeIntervalSince1970 * 1000))",
-                    type: .user(prompt),
-                    timestamp: now
-                )
-            )
-            session.conversationInfo = ConversationInfo(
-                summary: session.conversationInfo.summary,
-                lastMessage: prompt,
-                lastMessageRole: "user",
-                lastToolName: nil,
-                firstUserMessage: session.conversationInfo.firstUserMessage ?? prompt,
-                lastUserMessageDate: now,
-                usage: session.conversationInfo.usage
-            )
-        }
-
-        sessions[sessionId] = session
+        publishState()
     }
 
     private func processOpencodeProcessingStarted(sessionId: String, cwd: String) {
@@ -675,10 +631,15 @@ actor SessionStore {
         // Idempotent: if already processing, phase.canTransition allows it
         // (processing → processing is a no-op). Covers both thinking and
         // tool-running phases; the first call wins.
+        DebugLog.shared.write("[opencode-phase] processingStarted session=\(sessionId.prefix(8)) currentPhase=\(session.phase)")
         if session.phase.canTransition(to: .processing) {
             session.phase = .processing
+            DebugLog.shared.write("[opencode-phase] processingStarted → phase set to .processing")
+        } else {
+            DebugLog.shared.write("[opencode-phase] processingStarted → transition rejected from \(session.phase)")
         }
         sessions[sessionId] = session
+        publishState()
     }
 
     private func processOpencodeWaitingForUserInput(sessionId: String, cwd: String) {
@@ -690,265 +651,15 @@ actor SessionStore {
         // waiting on them). Transition is allowed from .processing by the
         // state machine; from .idle, .waitingForInput is also reachable.
         session.completionNotificationAt = nil
+        DebugLog.shared.write("[opencode-phase] waitingForUserInput session=\(sessionId.prefix(8)) currentPhase=\(session.phase)")
         if session.phase.canTransition(to: .waitingForInput) {
             session.phase = .waitingForInput
-        }
-        sessions[sessionId] = session
-    }
-
-    private func processOpencodeAssistantThinking(sessionId: String, cwd: String, text: String) {
-        var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
-        let now = Date()
-        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedText.isEmpty else { return }
-
-        enrichOpencodeRuntimeMetadata(session: &session)
-        session.lastActivity = now
-        // Mirror processOpencodeAssistantText: tools still in flight → .processing,
-        // pure reasoning with no tool activity → .idle. The previous form
-        // (?: .processing) was a copy-paste typo from the opencode event-stream
-        // commit (6c56af0) that forced .processing even during idle reasoning,
-        // which made the notch keep showing the orange spinner on opencode
-        // sessions that only emitted a thinking block before stopping.
-        session.phase = hasRunningTools(in: session) ? .processing : .idle
-        session.completionNotificationAt = nil
-        // Thinking always goes BEFORE the matching assistant text. The adapter
-        // emits .assistantThinking before .assistantText for the same message
-        // (reasoning flush precedes text flush in handleMessageUpdated), and we
-        // append in arrival order, so the thinking item lands at a lower index
-        // than its companion text. Chat view renders in array order, which is
-        // what we want.
-        let itemId = "opencode-thinking-\(sessionId)-\(Int(now.timeIntervalSince1970 * 1000))"
-        session.chatItems.append(
-            ChatHistoryItem(
-                id: itemId,
-                type: .thinking(trimmedText),
-                timestamp: now
-            )
-        )
-        // DIAGNOSTIC (#70): dump chatItems state to find where second thinking is lost
-        let thinkingCount = session.chatItems.filter { if case .thinking = $0.type { return true } else { return false } }.count
-        let last3 = session.chatItems.suffix(3).map { "\($0.id)=\(self.typeName($0.type))" }.joined(separator: ", ")
-        DebugLog.shared.write("[session-store] thinking appended session=\(sessionId) itemId=\(itemId) textChars=\(trimmedText.count) totalItems=\(session.chatItems.count) thinkingCount=\(thinkingCount) last3=\(last3)")
-
-        sessions[sessionId] = session
-    }
-
-    /// DIAGNOSTIC (#70): helper to label a chatItem type for debug logging
-    private func typeName(_ t: ChatHistoryItemType) -> String {
-        switch t {
-        case .user: return "user"
-        case .assistant: return "assistant"
-        case .toolCall(let tool): return "tool(\(tool.name))"
-        case .thinking: return "thinking"
-        case .image: return "image"
-        case .interrupted: return "interrupted"
-        }
-    }
-
-    /// Check whether the bash output ends with the opencode `<bash_metadata>`
-    /// footer (appended for timeout / abort / non-zero with metadata,
-    /// opencode/src/tool/bash.ts:393-398). We only inspect the tail of the
-    /// output because the literal string `<bash_metadata>` can appear in the
-    /// middle of benign output (e.g. `git diff` of code that references it)
-    /// — see #72 in the task list.
-    private nonisolated func tailContainsBashMetadata(_ output: String?) -> Bool? {
-        guard let output, !output.isEmpty else { return false }
-        // 1KB is generous — the footer is ~200 chars in practice. Cheap O(1)
-        // check that avoids scanning megabytes of `cat`-style output.
-        let tail = output.suffix(1024)
-        return tail.contains("<bash_metadata>")
-    }
-
-    private func processOpencodeAssistantText(sessionId: String, cwd: String, text: String) {
-        var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
-        let now = Date()
-        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedText.isEmpty else { return }
-
-        enrichOpencodeRuntimeMetadata(session: &session)
-        session.lastActivity = now
-        session.phase = hasRunningTools(in: session) ? .processing : .idle
-        session.completionNotificationAt = Date()
-        session.chatItems.append(
-            ChatHistoryItem(
-                id: "opencode-assistant-\(sessionId)-\(Int(now.timeIntervalSince1970 * 1000))",
-                type: .assistant(trimmedText),
-                timestamp: now
-            )
-        )
-        session.conversationInfo = ConversationInfo(
-            summary: session.conversationInfo.summary,
-            lastMessage: trimmedText,
-            lastMessageRole: "assistant",
-            lastToolName: nil,
-            firstUserMessage: session.conversationInfo.firstUserMessage,
-            lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
-            usage: session.conversationInfo.usage
-        )
-
-        sessions[sessionId] = session
-    }
-
-    private func processOpencodeToolStarted(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?) {
-        var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
-        let now = Date()
-        let toolId = toolUseId ?? makeOpencodeToolId(for: sessionId)
-
-        enrichOpencodeRuntimeMetadata(session: &session)
-        session.lastActivity = now
-        session.completionNotificationAt = nil
-        // NOTE: this unconditionally overwrites .waitingForInput to .processing.
-        // If a `question.asked` event from the opencode plugin arrived BEFORE
-        // this `preTool` (ordering between session.status, question.asked, and
-        // preTool is not formally guaranteed across opencode versions), the
-        // .waitingForInput phase set by processOpencodeWaitingForUserInput
-        // gets clobbered here and the user sees the orange processing spinner
-        // instead of the "Answer the question" banner. In practice opencode
-        // v1.15.13+ fires preTool first, so this race has not been observed,
-        // but if a user reports "stuck on processing while question dialog
-        // is open", inspect /tmp/nook-debug.log for the order of
-        //   → processingStarted (session.status=busy)
-        //   → waitingForUserInput (question.asked)
-        //   → toolStarted (preTool ...)
-        // and consider gating this assignment with a canTransition check that
-        // refuses to clobber .waitingForInput. See SessionPhase.swift for the
-        // state machine.
-        session.phase = .processing
-        session.toolTracker.startTool(id: toolId, name: toolName)
-
-        let inputPreview = inputSummary?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let input: [String: String] = {
-            // Opencode's subagent tool is named "task" (lowercase). Use the
-            // provider-agnostic kind so the description is preserved under
-            // the "description" key (matching the Claude subagent
-            // container) instead of the generic "command" key.
-            if ToolCallItem.kind(of: toolName) == .task, let desc = inputPreview {
-                return ["description": String(desc.prefix(80))]
-            }
-            return inputPreview.map { ["command": $0] } ?? [:]
-        }()
-        // If a tool item with this ID already exists, update its input
-        // instead of appending. Important: do NOT skip the update when
-        // input is already set — opencode can re-emit `preTool` for the
-        // same callID multiple times (e.g. message.part.updated state
-        // cycles pending→running→pending→running within a few ms, and
-        // the adapter forwards each `preTool` it sees). The previous
-        // version gated the update on `input["command"] == nil`, which
-        // meant every duplicate preTool fell through to `else` and
-        // appended a fresh chatItem. Three duplicate preTools → three
-        // bash rows in the chat, visible as a ~60pt blank gap.
-        if let idx = session.chatItems.firstIndex(where: { $0.id == toolId }),
-           case .toolCall(let existing) = session.chatItems[idx].type {
-            let updated = ToolCallItem(
-                name: existing.name,
-                input: input,
-                status: existing.status,
-                result: existing.result,
-                structuredResult: existing.structuredResult,
-                subagentTools: existing.subagentTools
-            )
-            session.chatItems[idx] = ChatHistoryItem(
-                id: toolId,
-                type: .toolCall(updated),
-                timestamp: session.chatItems[idx].timestamp
-            )
+            DebugLog.shared.write("[opencode-phase] waitingForUserInput → phase set to .waitingForInput")
         } else {
-            session.chatItems.append(
-                ChatHistoryItem(
-                    id: toolId,
-                    type: .toolCall(ToolCallItem(
-                        name: toolName,
-                        input: input,
-                        status: .running,
-                        result: nil,
-                        structuredResult: nil,
-                        subagentTools: []
-                    )),
-                    timestamp: now
-                )
-            )
+            DebugLog.shared.write("[opencode-phase] waitingForUserInput → transition rejected from \(session.phase)")
         }
-        session.conversationInfo = ConversationInfo(
-            summary: session.conversationInfo.summary,
-            lastMessage: inputPreview,
-            lastMessageRole: "tool",
-            lastToolName: toolName,
-            firstUserMessage: session.conversationInfo.firstUserMessage,
-            lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
-            usage: session.conversationInfo.usage
-        )
-
         sessions[sessionId] = session
-    }
-
-    private func processOpencodeToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String? = nil, error: String? = nil) {
-        var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
-        let now = Date()
-
-        enrichOpencodeRuntimeMetadata(session: &session)
-        session.lastActivity = now
-
-        let toolKind = ToolKind.classify(toolName)
-        let isBash = toolKind == .bash
-        // Bash error detection — two signals:
-        //   1. state.error is non-nil → opencode's ToolStateError path
-        //      (opencode/src/session/message-v2.ts:319-333), e.g. spawn() threw.
-        //   2. state.output ends with "<bash_metadata>…" footer → opencode's
-        //      bash.ts:393-398 appends this footer for timeout / abort / non-zero
-        //      with metadata. The footer is appended at the END of the output,
-        //      so we only check the tail (last 1KB). Checking the entire output
-        //      causes false positives when the bash output happens to contain
-        //      the literal string `<bash_metadata>` (e.g. `git diff` of code
-        //      that references it).
-        // Route A: don't parse the XML; the rendered preview already conveys why.
-        let outputIsError = (error?.isEmpty == false)
-            || (isBash && (tailContainsBashMetadata(output) ?? false))
-        // Prefer output over error when both exist — output is usually the
-        // longer body (stdout/stderr); error is just the exception message.
-        let resultBody: String? = {
-            if let output, !output.isEmpty { return output }
-            if let error, !error.isEmpty { return error }
-            return nil
-        }()
-        let finalStatus: ToolStatus = outputIsError ? .error : .success
-
-        if let toolId = latestRunningCodexToolId(in: session, toolName: toolName, toolUseId: toolUseId) {
-            session.toolTracker.completeTool(id: toolId, success: !outputIsError)
-            updateToolStatus(in: &session, toolId: toolId, status: finalStatus)
-        }
-
-        // Stamp `result` on the toolCall, except on the parent's task container.
-        // canExpand already excludes .task, and subagentTools is what drives the
-        // container's own expansion — leaving `tool.result = nil` there is the
-        // right model. structuredResult intentionally untouched (route A).
-        if let toolUseId, toolKind != .task, let body = resultBody {
-            for i in 0..<session.chatItems.count where session.chatItems[i].id == toolUseId {
-                if case .toolCall(var tool) = session.chatItems[i].type {
-                    tool.status = finalStatus
-                    tool.result = body
-                    session.chatItems[i] = ChatHistoryItem(
-                        id: session.chatItems[i].id,
-                        type: .toolCall(tool),
-                        timestamp: session.chatItems[i].timestamp
-                    )
-                }
-                break
-            }
-        }
-
-        session.conversationInfo = ConversationInfo(
-            summary: session.conversationInfo.summary,
-            lastMessage: inputSummary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? session.conversationInfo.lastMessage,
-            lastMessageRole: "tool",
-            lastToolName: toolName,
-            firstUserMessage: session.conversationInfo.firstUserMessage,
-            lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
-            usage: session.conversationInfo.usage
-        )
-        session.phase = hasRunningTools(in: session) ? .processing : .idle
-
-        sessions[sessionId] = session
+        publishState()
     }
 
     private func processOpencodeStop(sessionId: String, cwd: String) {
@@ -972,6 +683,7 @@ actor SessionStore {
 
         session.toolTracker.inProgress.removeAll()
         sessions[sessionId] = session
+        publishState()
     }
 
     // MARK: - Unified ChatItem Update Processing
@@ -1018,21 +730,77 @@ actor SessionStore {
 
         switch update.mutation {
         case .insert:
-            let item = ChatHistoryItem(
-                id: update.id,
-                type: update.block.toChatHistoryItemType(),
-                timestamp: now
-            )
             if let idx = session.chatItems.firstIndex(where: { $0.id == update.id }) {
-                // Upsert: replace existing item (preserves original timestamp)
+                // ── Upsert: existing item found ─────────────────────────
                 let originalTimestamp = session.chatItems[idx].timestamp
+                let existingType = session.chatItems[idx].type
+
+                // Tool call: preserve runtime state (status, result,
+                // subagentTools) set by the hook path. Adapter provides
+                // more complete name/input/structuredResult from JSONL.
+                if case .toolCall(let newTool) = update.block,
+                   case .toolCall(let existingTool) = existingType {
+                    DebugLog.shared.write("[chat-item-update] toolCall-upsert session=\(update.sessionId) id=\(update.id) existingStatus=\(existingTool.status) adapterStatus=\(newTool.status) adapterIsError=\(update.isError) existingHasStructured=\(existingTool.structuredResult != nil) adapterHasStructured=\(newTool.structuredResult != nil)")
+                    let merged = ToolCallItem(
+                        name: newTool.name,
+                        input: newTool.input,
+                        status: existingTool.status,
+                        result: existingTool.result,
+                        // Fill in structuredResult from adapter when hook
+                        // path didn't have it (e.g. AskUserQuestion options
+                        // parsed from tool input by the adapter fallback).
+                        structuredResult: existingTool.structuredResult ?? newTool.structuredResult,
+                        subagentTools: existingTool.subagentTools
+                    )
+                    session.chatItems[idx] = ChatHistoryItem(
+                        id: update.id, type: .toolCall(merged),
+                        timestamp: originalTimestamp
+                    )
+                    blockOrderings[update.id] = update.ordering
+                    break
+                }
+
+                // User prompt: preserve once it exists — JSONL shouldn't
+                // rewrite user text.
+                if case .user = existingType {
+                    break
+                }
+
+                // Assistant text: don't overwrite non-empty with empty,
+                // and skip empty→empty churn.
+                if case .assistantText(let newText) = update.block,
+                   case .assistant(let existing) = existingType {
+                    let newTrimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let existingTrimmed = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if existingTrimmed.isEmpty && newTrimmed.isEmpty { break }
+                    if !existingTrimmed.isEmpty && newTrimmed.isEmpty { break }
+                }
+
+                // Thinking: skip empty→empty replacement.
+                if case .thinking(let newText) = update.block,
+                   case .thinking(let existing) = existingType,
+                   existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    break
+                }
+
+                // Interrupted: only insert once.
+                if case .interrupted = existingType {
+                    break
+                }
+
+                // Default: replace content, preserve timestamp.
                 session.chatItems[idx] = ChatHistoryItem(
                     id: update.id,
                     type: update.block.toChatHistoryItemType(),
                     timestamp: originalTimestamp
                 )
             } else {
-                session.chatItems.append(item)
+                session.chatItems.append(ChatHistoryItem(
+                    id: update.id,
+                    type: update.block.toChatHistoryItemType(),
+                    timestamp: update.messageTimestamp ?? now
+                ))
             }
             blockOrderings[update.id] = update.ordering
 
@@ -1057,6 +825,29 @@ actor SessionStore {
                 if let structured = block.structuredResult {
                     existing.structuredResult = structured
                 }
+                // Auto-construct TaskResult for task/Agent tools when the
+                // provider doesn't supply one (OpenCode). This uses the
+                // subagent tracking data already available in SessionStore
+                // to populate the same fields Claude's JSONL provides.
+                if existing.isSubagentContainer && existing.structuredResult == nil {
+                    let statusString: String = {
+                        switch existing.status {
+                        case .success: return "completed"
+                        case .error: return "error"
+                        case .interrupted: return "interrupted"
+                        default: return "unknown"
+                        }
+                    }()
+                    existing.structuredResult = .task(TaskResult(
+                        agentId: update.id,
+                        status: statusString,
+                        content: existing.result ?? "",
+                        prompt: nil,
+                        totalDurationMs: nil,
+                        totalTokens: nil,
+                        totalToolUseCount: existing.subagentTools.isEmpty ? nil : existing.subagentTools.count
+                    ))
+                }
                 session.chatItems[idx] = ChatHistoryItem(
                     id: update.id,
                     type: .toolCall(existing),
@@ -1069,14 +860,18 @@ actor SessionStore {
             blockOrderings.removeValue(forKey: update.id)
         }
 
-        // ── Lifecycle side effects ────────────────────────────────────
-        // Mirror the side effects that the old processOpencode* methods
-        // applied (lastActivity, phase, completionNotificationAt,
-        // conversationInfo, toolTracker). Only the .insert / .updateStatus
-        // mutations carry meaningful lifecycle signals; .update / .remove
-        // are structural and don't change the session's activity state.
+        // ── Lifecycle side effects (OpenCode only) ────────────────────
+        // These side effects mirror the old processOpencode* methods
+        // (lastActivity, phase, completionNotificationAt, conversationInfo,
+        // toolTracker). They are designed for OpenCode's real-time event
+        // stream where each event carries a lifecycle signal.
+        //
+        // Claude's JSONL batch updates must NOT trigger these: phase is
+        // managed by processHookEvent(), conversationInfo by processFileUpdate()
+        // / ConversationParser, and toolTracker by processToolTracking().
 
-        if update.mutation == .insert || update.mutation == .updateStatus {
+        if update.provider == .opencode,
+           update.mutation == .insert || update.mutation == .updateStatus {
             enrichOpencodeRuntimeMetadata(session: &session)
             session.lastActivity = now
 
@@ -1295,6 +1090,37 @@ actor SessionStore {
     }
 
     private func processToolTracking(event: HookEvent, session: inout SessionState) {
+        // DIAGNOSTIC (#14): log every event entering processToolTracking
+        // so we can confirm whether PostToolUse actually arrives after a
+        // user denies AskUserQuestion in the terminal (root cause of the
+        // "stuck on Waiting for approval" symptom).
+        DebugLog.shared.write("[hook-tool-tracking] session=\(event.sessionId) event=\(event.event) toolUseId=\(event.toolUseId ?? "nil") tool=\(event.tool ?? "nil")")
+
+        // Skip hook placeholder creation for append-order providers.
+        // The adapter's JSONL/transcript sync is authoritative — it creates
+        // items with correct message.timestamp in source order. Hook
+        // PreToolUse creates placeholders with timestamp = Date() (later
+        // than the message timestamp), which breaks the append-only ordering
+        // guarantee (e.g. a Question placeholder appearing before its
+        // thinking bubble). For append-order providers, the adapter handles
+        // both tool calls and their status; the hook path only tracks
+        // lifecycle in toolTracker.
+        if !session.provider.needsHookPlaceholders {
+            if let toolUseId = event.toolUseId {
+                switch event.event {
+                case "PreToolUse":
+                    if let toolName = event.tool {
+                        session.toolTracker.startTool(id: toolUseId, name: toolName)
+                    }
+                case "PostToolUse":
+                    session.toolTracker.completeTool(id: toolUseId, success: true)
+                default:
+                    break
+                }
+            }
+            return
+        }
+
         switch event.event {
         case "PreToolUse":
             if let toolUseId = event.toolUseId, let toolName = event.tool {
@@ -1348,6 +1174,13 @@ actor SessionStore {
                     if session.chatItems[i].id == toolUseId,
                        case .toolCall(var tool) = session.chatItems[i].type,
                        tool.status == .waitingForApproval || tool.status == .running {
+                        let prevStatus = tool.status
+                        // DIAGNOSTIC (#14): confirm whether PostToolUse ever
+                        // lands and what status transition it forces. The
+                        // fact that it always sets .success (regardless of
+                        // whether the tool was rejected in the terminal) is
+                        // suspected bug A — flagged for the next iteration.
+                        DebugLog.shared.write("[hook-tool-tracking] postToolUse session=\(event.sessionId) toolUseId=\(toolUseId) prevStatus=\(prevStatus) newStatus=success")
                         tool.status = .success
                         session.chatItems[i] = ChatHistoryItem(
                             id: toolUseId,
@@ -1355,6 +1188,13 @@ actor SessionStore {
                             timestamp: session.chatItems[i].timestamp
                         )
                         break
+                    } else if session.chatItems[i].id == toolUseId,
+                              case .toolCall = session.chatItems[i].type {
+                        // DIAGNOSTIC (#14): tool was found in chatItems but
+                        // its status was neither .running nor
+                        // .waitingForApproval — i.e. PostToolUse arrived
+                        // after JSONL sync already set a terminal status.
+                        DebugLog.shared.write("[hook-tool-tracking] postToolUse-skip session=\(event.sessionId) toolUseId=\(toolUseId) reason=existing-status-not-active")
                     }
                 }
             }
@@ -1452,26 +1292,31 @@ actor SessionStore {
     /// Creates the visible `task` chatItem on the parent session if one isn't
     /// already there. The OpenCode adapter emits `subagentStarted` *in addition
     /// to* the normal `preTool(tool=task)` for the parent's task invocation, so
-    /// `processOpencodeToolStarted` usually creates the chatItem first and this
+    /// the opencode preTool handler usually creates the chatItem first and this
     /// guard is a no-op — but if the adapter ever emits subagentStarted without
     /// a matching preTool (e.g. because of a race), the chatItem still shows up.
     private func processSubagentStarted(sessionId: String, taskToolId: String) {
         guard var session = sessions[sessionId] else { return }
-        if !session.chatItems.contains(where: { $0.id == taskToolId }) {
-            session.chatItems.append(
-                ChatHistoryItem(
-                    id: taskToolId,
-                    type: .toolCall(ToolCallItem(
-                        name: "task",
-                        input: [:],
-                        status: .running,
-                        result: nil,
-                        structuredResult: nil,
-                        subagentTools: []
-                    )),
-                    timestamp: Date()
+
+        // Skip chatItem placeholder for append-order providers — the
+        // adapter's JSONL sync creates items with correct timestamps.
+        if session.provider.needsHookPlaceholders {
+            if !session.chatItems.contains(where: { $0.id == taskToolId }) {
+                session.chatItems.append(
+                    ChatHistoryItem(
+                        id: taskToolId,
+                        type: .toolCall(ToolCallItem(
+                            name: "task",
+                            input: [:],
+                            status: .running,
+                            result: nil,
+                            structuredResult: nil,
+                            subagentTools: []
+                        )),
+                        timestamp: Date()
+                    )
                 )
-            )
+            }
         }
         session.subagentState.startTask(taskToolId: taskToolId)
         sessions[sessionId] = session
@@ -1711,6 +1556,8 @@ actor SessionStore {
     private func processFileUpdate(_ payload: FileUpdatePayload) async {
         guard var session = sessions[payload.sessionId] else { return }
 
+        DebugLog.shared.write("[claude-file-update] session=\(payload.sessionId) msgs=\(payload.messages.count) incremental=\(payload.isIncremental) completedTools=\(payload.completedToolIds.count)")
+
         // Update conversationInfo from JSONL (summary, lastMessage, etc.)
         let conversationInfo = await ConversationParser.shared.parse(
             sessionId: payload.sessionId,
@@ -1750,32 +1597,35 @@ actor SessionStore {
             Self.logger.debug("Clear reconciliation: kept \(session.chatItems.count) of \(previousCount) items")
         }
 
-            let blocksInThisBatch = Self.upsertBlocks(
-                messages: payload.messages,
-                completedToolIds: payload.completedToolIds,
-                toolResults: payload.toolResults,
-                structuredResults: payload.structuredResults,
-                session: &session
-            )
+        // Persist clear reconciliation before applying adapter updates,
+        // so applyChatItemUpdate() sees the filtered chatItems.
+        sessions[payload.sessionId] = session
 
-        if !payload.isIncremental {
-            session.chatItems.sort { $0.timestamp < $1.timestamp }
+        // Use ClaudeChatItemAdapter instead of upsertBlocks.
+        // Sorting is handled by ChatItemSorter in applyChatItemUpdate().
+        let chatUpdates = ClaudeChatItemAdapter.updates(fromFileUpdate: payload)
+        let typeCounts = Dictionary(grouping: chatUpdates, by: { "\($0.block)".prefix(20) }).mapValues(\.count)
+        DebugLog.shared.write("[claude-file-update] session=\(payload.sessionId) adapterUpdates=\(chatUpdates.count) types=\(typeCounts)")
+        for update in chatUpdates {
+            applyChatItemUpdate(update)
         }
 
-        session.toolTracker.lastSyncTime = Date()
+        // Re-fetch session — applyChatItemUpdate may have modified it.
+        guard var currentSession = sessions[payload.sessionId] else { return }
+        currentSession.toolTracker.lastSyncTime = Date()
 
         await populateSubagentToolsFromAgentFiles(
             sessionId: payload.sessionId,
-            session: &session,
+            session: &currentSession,
             cwd: payload.cwd,
             structuredResults: payload.structuredResults
         )
 
-        sessions[payload.sessionId] = session
+        sessions[payload.sessionId] = currentSession
 
         await emitToolCompletionEvents(
             sessionId: payload.sessionId,
-            session: session,
+            session: currentSession,
             completedToolIds: payload.completedToolIds,
             toolResults: payload.toolResults,
             structuredResults: payload.structuredResults
@@ -1858,167 +1708,16 @@ actor SessionStore {
         }
     }
 
-    /// Upsert blocks into `chatItems`.
-    ///
-    /// For every block we either UPDATE the existing item with the same id (preserving
-    /// runtime state like tool status / result / subagent children) or APPEND a new
-    /// item if the id isn't present yet. Empty text / thinking blocks are allowed in
-    /// the array — `AssistantMessageView` / `ThinkingView` render them as `EmptyView`
-    /// so we never get orphan dots, but the placeholder is present so a later
-    /// non-empty content update replaces it in place rather than disappearing.
-    ///
-    /// The earlier behaviour returned `nil` for empty text and skipped re-processing
-    /// of the same id; in long turns with multiple tool calls that combination made
-    /// the final assistant text vanish from the chat view until the next turn's
-    /// re-sync happened to re-introduce it.
-    ///
-    /// Takes `inout SessionState` rather than separate inout arrays because passing
-    /// `&session.chatItems` and `&session.toolTracker` to the same call triggers a
-    /// Swift exclusivity violation (the runtime flags both as simultaneous modify
-    /// accesses to the same struct storage). Inside this function the two fields
-    /// are accessed sequentially under a single inout scope, which is allowed.
-    static func upsertBlocks(
-        messages: [ChatMessage],
-        completedToolIds: Set<String>,
-        toolResults: [String: ConversationParser.ToolResult],
-        structuredResults: [String: ToolResultData],
-        session: inout SessionState
-    ) {
-        for message in messages {
-            for (blockIndex, block) in message.content.enumerated() {
-                switch block {
-                case .toolUse(let tool):
-                    if let idx = session.chatItems.firstIndex(where: { $0.id == tool.id }),
-                       case .toolCall(let existingTool) = session.chatItems[idx].type {
-                        session.chatItems[idx] = ChatHistoryItem(
-                            id: tool.id,
-                            type: .toolCall(ToolCallItem(
-                                name: tool.name,
-                                input: tool.input,
-                                status: existingTool.status,
-                                result: existingTool.result,
-                                structuredResult: existingTool.structuredResult,
-                                subagentTools: existingTool.subagentTools
-                            )),
-                            timestamp: message.timestamp
-                        )
-                        continue
-                    }
-                    if session.toolTracker.markSeen(tool.id) {
-                        let status: ToolStatus = completedToolIds.contains(tool.id) ? .success : .running
-                        var resultText: String? = nil
-                        if let parserResult = toolResults[tool.id] {
-                            if let stdout = parserResult.stdout, !stdout.isEmpty {
-                                resultText = stdout
-                            } else if let stderr = parserResult.stderr, !stderr.isEmpty {
-                                resultText = stderr
-                            } else if let content = parserResult.content, !content.isEmpty {
-                                resultText = content
-                            }
-                        }
-                        session.chatItems.append(ChatHistoryItem(
-                            id: tool.id,
-                            type: .toolCall(ToolCallItem(
-                                name: tool.name,
-                                input: tool.input,
-                                status: status,
-                                result: resultText,
-                                structuredResult: structuredResults[tool.id],
-                                subagentTools: []
-                            )),
-                            timestamp: message.timestamp
-                        ))
-                    }
-
-                case .text(let text):
-                    let itemId = "\(message.id)-text-\(blockIndex)"
-                    let newType: ChatHistoryItemType = (message.role == .user) ? .user(text) : .assistant(text)
-                    if let idx = session.chatItems.firstIndex(where: { $0.id == itemId }) {
-                        // Preserve user prompts once they exist — the JSONL shouldn't
-                        // rewrite user text, and overwriting an empty placeholder with
-                        // another empty placeholder just churns the view.
-                        if case .user = session.chatItems[idx].type { continue }
-                        // For assistant text, allow empty → empty (no churn) and
-                        // non-empty → replace the placeholder. Never overwrite a
-                        // non-empty assistant message with empty content.
-                        if case .assistant(let existing) = session.chatItems[idx].type,
-                           existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                           text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            continue
-                        }
-                        session.chatItems[idx] = ChatHistoryItem(
-                            id: itemId,
-                            type: newType,
-                            timestamp: message.timestamp
-                        )
-                    } else {
-                        session.chatItems.append(ChatHistoryItem(
-                            id: itemId,
-                            type: newType,
-                            timestamp: message.timestamp
-                        ))
-                    }
-
-                case .thinking(let text):
-                    let itemId = "\(message.id)-thinking-\(blockIndex)"
-                    if let idx = session.chatItems.firstIndex(where: { $0.id == itemId }) {
-                        if case .thinking(let existing) = session.chatItems[idx].type,
-                           existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                           text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            continue
-                        }
-                        session.chatItems[idx] = ChatHistoryItem(
-                            id: itemId,
-                            type: .thinking(text),
-                            timestamp: message.timestamp
-                        )
-                    } else {
-                        // Skip inserting thinking blocks with empty text
-                        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                            continue
-                        }
-                        session.chatItems.append(ChatHistoryItem(
-                            id: itemId,
-                            type: .thinking(text),
-                            timestamp: message.timestamp
-                        ))
-                    }
-
-                case .image(let imageBlock):
-                    let itemId = "\(message.id)-image-\(blockIndex)"
-                    if let idx = session.chatItems.firstIndex(where: { $0.id == itemId }) {
-                        session.chatItems[idx] = ChatHistoryItem(
-                            id: itemId,
-                            type: .image(imageBlock),
-                            timestamp: message.timestamp
-                        )
-                    } else {
-                        session.chatItems.append(ChatHistoryItem(
-                            id: itemId,
-                            type: .image(imageBlock),
-                            timestamp: message.timestamp
-                        ))
-                    }
-
-                case .interrupted:
-                    let itemId = "\(message.id)-interrupted-\(blockIndex)"
-                    if !session.chatItems.contains(where: { $0.id == itemId }) {
-                        session.chatItems.append(ChatHistoryItem(
-                            id: itemId,
-                            type: .interrupted,
-                            timestamp: message.timestamp
-                        ))
-                    }
-                }
-            }
-        }
-    }
-
     private func updateToolStatus(in session: inout SessionState, toolId: String, status: ToolStatus) {
         var found = false
         for i in 0..<session.chatItems.count {
             if session.chatItems[i].id == toolId,
                case .toolCall(var tool) = session.chatItems[i].type {
+                let prevStatus = tool.status
+                // DIAGNOSTIC (#14): log every status transition so we can
+                // verify whether the .waitingForApproval placeholder for
+                // AskUserQuestion ever gets cleared after denial.
+                DebugLog.shared.write("[hook-tool-status] update session=\(session.sessionId) toolUseId=\(toolId) prevStatus=\(prevStatus) newStatus=\(status)")
                 tool.status = status
                 session.chatItems[i] = ChatHistoryItem(
                     id: toolId,
@@ -2032,6 +1731,11 @@ actor SessionStore {
         if !found {
             let count = session.chatItems.count
             Self.logger.warning("Tool \(toolId.prefix(16), privacy: .public) not found in chatItems (count: \(count))")
+            // DIAGNOSTIC (#14): log when updateToolStatus can't find the
+            // target tool — likely culprit for "stuck on Waiting for
+            // approval" if PermissionRequest updates a toolUseId that
+            // PreToolUse never created (mismatch / out-of-order).
+            DebugLog.shared.write("[hook-tool-status] update-miss session=\(session.sessionId) toolUseId=\(toolId) requestedStatus=\(status) chatItemsCount=\(count)")
         }
     }
 
@@ -2126,21 +1830,25 @@ actor SessionStore {
     ) async {
         guard var session = sessions[sessionId] else { return }
 
+        DebugLog.shared.write("[claude-history-loaded] session=\(sessionId) msgs=\(messages.count) completedTools=\(completedTools.count)")
+
         // Update conversationInfo (summary, lastMessage, etc.)
         session.conversationInfo = conversationInfo
 
-        Self.upsertBlocks(
-            messages: messages,
-            completedToolIds: completedTools,
+        // Use ClaudeChatItemAdapter instead of upsertBlocks.
+        // Sorting is handled by ChatItemSorter in applyChatItemUpdate().
+        sessions[sessionId] = session
+
+        let chatUpdates = ClaudeChatItemAdapter.updates(
+            fromHistoryLoad: messages,
+            completedTools: completedTools,
             toolResults: toolResults,
             structuredResults: structuredResults,
-            session: &session
+            sessionId: sessionId
         )
-
-        // Sort by timestamp
-        session.chatItems.sort { $0.timestamp < $1.timestamp }
-
-        sessions[sessionId] = session
+        for update in chatUpdates {
+            applyChatItemUpdate(update)
+        }
     }
 
     // MARK: - File Sync Scheduling
