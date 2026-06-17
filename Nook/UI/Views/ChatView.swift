@@ -624,6 +624,11 @@ struct ChatView: View {
     // MARK: - Actions
 
     private func focusTerminal() {
+        // Close the notch so focus can return to the terminal app. The
+        // terminal is the user's primary workspace for AskUserQuestion —
+        // leaving the notch open means the user is still looking at Nook
+        // instead of the question prompt in their terminal.
+        viewModel.notchClose()
         Task {
             DebugLog.shared.write("[focus] called session.isInTmux=\(session.isInTmux) session.pid=\(session.pid ?? -1) provider=\(session.provider)")
             // tmux path (Claude's default): the Yabai controller walks
