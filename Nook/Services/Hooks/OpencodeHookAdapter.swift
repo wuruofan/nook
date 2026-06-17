@@ -10,6 +10,9 @@
 //    session.updated        → sessionStart on first sighting; refreshes cwd afterwards
 //    session.status         → stop on status.type == "idle"
 //    session.idle           → stop (legacy)
+//    question.asked         → waitingForUserInput (opencode v1.15.13 ONLY;
+//                              see handleQuestionAsked — v1.17.x does NOT
+//                              fire this event, fallback path below)
 //    message.updated        → user/assistant message boundary
 //    message.part.updated   → user text, assistant text (initial empty), bash tool
 //    message.part.delta     → assistant text streaming chunks (field=text)
@@ -18,6 +21,18 @@
 //    message.part.updated(type=text, text="")   → initialise buffer for messageID
 //    message.part.delta(field=text, delta=...)  → append chunks
 //    message.updated(role=assistant, finish=stop) → flush buffer as .assistantText
+//
+//  AskUserQuestion phase — the v1.15.13 `question.asked` event was
+//  reported by reverse-engineering but does NOT actually fire in v1.17.x
+//  (verified 2026-06-17 — log only shows `file.watcher.updated` events,
+//  no `question.asked`). We therefore derive `.waitingForUserInput` from
+//  `message.part.updated(type=tool, tool=question)` in handleToolPart
+//  (see switch below). The `handleQuestionAsked` path is kept as
+//  forward-looking code for the v1.15.13 case but is NOT the primary
+//  detection path. If a future opencode version starts firing this event
+//  again, handleQuestionAsked will run alongside the tool-part detection
+//  (idempotent — both set .waitingForInput which is a no-op if already
+//  in that phase).
 //
 
 import Foundation
@@ -473,12 +488,23 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             lock.unlock()
             return v
         }()
-        // opencode v1.15.13 fires `question.asked` exactly when the
-        // ask_user_question dialog appears. From opencode's perspective the
-        // session is still "busy" (session.status stays busy until the user
-        // answers), so without this explicit signal the notch would keep
-        // showing the orange processing indicator while the user is being
-        // asked to pick an option.
+        // opencode v1.15.13 was reported to fire `question.asked` exactly
+        // when the ask_user_question dialog appears. From opencode's
+        // perspective the session is still "busy" (session.status stays
+        // busy until the user answers), so without this explicit signal
+        // the notch would keep showing the orange processing indicator
+        // while the user is being asked to pick an option.
+        //
+        // ⚠ v1.17.x compatibility note (verified 2026-06-17): this event
+        // does NOT actually fire in v1.17.x. The plugin only sees
+        // `file.watcher.updated` events from opencode — no `question.asked`.
+        // We therefore DO NOT rely on this handler for v1.17.x; the primary
+        // detection path is `handleToolPart` (line ~1018) which detects
+        // `message.part.updated(type=tool, tool=question)` and emits
+        // `.waitingForUserInput` alongside the standard `preTool` event.
+        // This handler is kept as forward-looking code for the v1.15.13
+        // case and as a no-op safety net for v1.17.x (it just returns
+        // early when the event never arrives).
         //
         // The event payload (opencode/src/question/index.ts:35-45, `Request`
         // schema) also carries `tool: { messageID, callID }` when the
@@ -1007,10 +1033,23 @@ final class OpencodeHookAdapter: @unchecked Sendable {
                 input: Self.stringifyInput(input ?? [:]),
                 messageId: messageId
             )
-            // Emit waitingForUserInput for the question tool so the list
-            // view shows the green flag icon instead of the processing
-            // spinner. opencode v1.15.13 should fire `question.asked` for
-            // this, but some versions don't — this is a safety net.
+            // AskUserQuestion phase — PRIMARY detection path for v1.17.x.
+            //
+            // We derive `.waitingForUserInput` from the standard tool event
+            // here, NOT from `question.asked` (which doesn't fire in
+            // v1.17.x — see file header comment). When opencode invokes
+            // its `question` tool, it sends a `message.part.updated`
+            // event with `part.type=tool` and `part.tool=question`. We
+            // detect that here and emit `.waitingForUserInput` alongside
+            // the standard `.preTool` so the list view shows the green
+            // flag icon instead of the processing spinner.
+            //
+            // The `handleQuestionAsked` path (line ~498) is the v1.15.13
+            // primary path but is a no-op in v1.17.x because the event
+            // never arrives. Both paths converge on the same
+            // `.waitingForUserInput` event, so they're idempotent — if
+            // a future opencode version starts firing `question.asked`
+            // again, the phase will simply be set twice (idempotent).
             if toolName.lowercased() == "question" || toolName.lowercased() == "askuserquestion" {
                 return [preToolEvent, .waitingForUserInput(sessionId: sessionId, cwd: cwd)]
             }
