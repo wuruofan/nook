@@ -620,6 +620,7 @@ actor SessionStore {
         if isNewSession {
             mixpanel?.track(event: "Session Started", properties: ["provider": "opencode"])
         }
+        publishState()
     }
 
     private func processOpencodeProcessingStarted(sessionId: String, cwd: String) {
@@ -634,6 +635,7 @@ actor SessionStore {
             session.phase = .processing
         }
         sessions[sessionId] = session
+        publishState()
     }
 
     private func processOpencodeWaitingForUserInput(sessionId: String, cwd: String) {
@@ -649,6 +651,7 @@ actor SessionStore {
             session.phase = .waitingForInput
         }
         sessions[sessionId] = session
+        publishState()
     }
 
     private func processOpencodeStop(sessionId: String, cwd: String) {
@@ -672,6 +675,7 @@ actor SessionStore {
 
         session.toolTracker.inProgress.removeAll()
         sessions[sessionId] = session
+        publishState()
     }
 
     // MARK: - Unified ChatItem Update Processing

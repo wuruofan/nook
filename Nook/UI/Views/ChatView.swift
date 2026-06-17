@@ -632,10 +632,17 @@ struct ChatView: View {
             // installed.
             if session.isInTmux, let pid = session.pid {
                 if await YabaiController.shared.focusWindow(forClaudePid: pid) {
+                    DebugLog.shared.write("[focus] tmux focusWindow(forClaudePid) succeeded")
                     return
                 }
-                _ = await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd)
-                return
+                DebugLog.shared.write("[focus] tmux focusWindow(forClaudePid) failed, trying forWorkingDirectory")
+                if await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd) {
+                    DebugLog.shared.write("[focus] tmux focusWindow(forWorkingDirectory) succeeded")
+                    return
+                }
+                DebugLog.shared.write("[focus] tmux path failed, falling through to non-tmux fallback")
+                // Fall through to non-tmux fallback — yabai may not be
+                // installed or the tmux lookup may have failed.
             }
             // Non-tmux fallback (e.g. opencode running directly in Ghostty).
             // Yabai focuses whole windows by PID; for a non-tmux shell we
@@ -646,20 +653,25 @@ struct ChatView: View {
             // opencode question popup.
             if let pid = session.pid {
                 let activated = await focusTerminalApp(forChildPid: Int(pid))
-                if !activated {
-                    DebugLog.shared.write("[focus] non-tmux focus failed: could not find terminal app for pid=\(pid)")
-                    // Last resort: try activating any known terminal app
-                    // by bundle ID. Works when the process tree walk fails
-                    // (e.g. Ghostty launched via launchd, PID namespace quirks).
-                    let terminalBundleIds = ["com.mitchellh.ghostty", "com.googlecode.iterm2", "com.apple.Terminal"]
-                    for bundleId in terminalBundleIds {
-                        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
-                            let ok = app.activate()
-                            DebugLog.shared.write("[focus] last-resort activate bundleId=\(bundleId) success=\(ok)")
-                            if ok { break }
-                        }
+                if activated {
+                    DebugLog.shared.write("[focus] non-tmux focusTerminalApp succeeded")
+                    return
+                }
+                DebugLog.shared.write("[focus] non-tmux focusTerminalApp failed: could not find terminal app for pid=\(pid)")
+                // Last resort: try activating any known terminal app
+                // by bundle ID. Works when the process tree walk fails
+                // (e.g. Ghostty launched via launchd, PID namespace quirks).
+                let terminalBundleIds = ["com.mitchellh.ghostty", "com.googlecode.iterm2", "com.apple.Terminal"]
+                for bundleId in terminalBundleIds {
+                    if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
+                        let ok = app.activate()
+                        DebugLog.shared.write("[focus] last-resort activate bundleId=\(bundleId) success=\(ok)")
+                        if ok { return }
                     }
                 }
+                DebugLog.shared.write("[focus] all focus methods failed")
+            } else {
+                DebugLog.shared.write("[focus] session.pid is nil, cannot focus terminal")
             }
         }
     }
