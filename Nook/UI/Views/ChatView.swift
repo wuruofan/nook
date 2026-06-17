@@ -947,12 +947,15 @@ struct ToolCallView: View {
     }
 
     private var hasResult: Bool {
+        // AskUserQuestion: options are static content (parsed from tool
+        // input), so the item always has renderable content regardless of
+        // whether structuredResult is populated. This matters for OpenCode's
+        // hook path which doesn't set structuredResult until the tool
+        // completes — the user should still see options while waiting.
+        if tool.kind == .askUserQuestion { return true }
+
         let hasNonEmptyResult = tool.result.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
-        let result = hasNonEmptyResult || tool.structuredResult != nil
-        if tool.kind == .askUserQuestion {
-            DebugLog.shared.write("[chat-view] AskQuestion hasResult=\(result) hasNonEmptyResult=\(hasNonEmptyResult) hasStructured=\(tool.structuredResult != nil) kind=\(tool.kind) status=\(tool.status) name=\(tool.name)")
-        }
-        return result
+        return hasNonEmptyResult || tool.structuredResult != nil
     }
 
     /// Whether the tool can be expanded. Two cases:
