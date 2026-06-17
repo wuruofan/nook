@@ -948,7 +948,11 @@ struct ToolCallView: View {
 
     private var hasResult: Bool {
         let hasNonEmptyResult = tool.result.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
-        return hasNonEmptyResult || tool.structuredResult != nil
+        let result = hasNonEmptyResult || tool.structuredResult != nil
+        if tool.kind == .askUserQuestion {
+            DebugLog.shared.write("[chat-view] AskQuestion hasResult=\(result) hasNonEmptyResult=\(hasNonEmptyResult) hasStructured=\(tool.structuredResult != nil) kind=\(tool.kind) status=\(tool.status) name=\(tool.name)")
+        }
+        return result
     }
 
     /// Whether the tool can be expanded. Two cases:
@@ -1165,8 +1169,13 @@ struct ToolCallView: View {
 
                 Spacer()
 
-                // Expand indicator (only for expandable tools)
-                if canExpand && tool.status != .running && tool.status != .waitingForApproval {
+                // Expand indicator (only for expandable tools).
+                // AskUserQuestion options are static (parsed from input),
+                // so always allow expanding regardless of status. Other
+                // tools hide the chevron while running/waitingForApproval
+                // because their result content isn't available yet.
+                let isAskQuestion = tool.kind == .askUserQuestion
+                if canExpand && (isAskQuestion || (tool.status != .running && tool.status != .waitingForApproval)) {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .medium))
                         .foregroundColor(secondaryTextColor.opacity(0.8))
@@ -1191,7 +1200,10 @@ struct ToolCallView: View {
             // text output (which is the agent's final message — already
             // visible in the subagent tools list).
             let isSubagentWithResult = tool.isSubagentContainer && tool.structuredResult != nil
-            if showContent && tool.status != .running && (!tool.isSubagentContainer || isSubagentWithResult) && (hasResult || tool.kind == .edit) {
+            // AskUserQuestion content (options) is static — allow showing
+            // even while the tool is still running/waiting for answer.
+            let isAskQuestion = tool.kind == .askUserQuestion
+            if showContent && (isAskQuestion || tool.status != .running) && (!tool.isSubagentContainer || isSubagentWithResult) && (hasResult || tool.kind == .edit) {
                 ToolResultContent(tool: tool)
                     .padding(.leading, 12)
                     .padding(.top, 4)

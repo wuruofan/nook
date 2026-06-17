@@ -193,6 +193,20 @@ struct ToolCallItem: Equatable, Sendable {
             let blocking = input["block"] == "true"
             return blocking ? "Waiting..." : "Checking \(agentId.prefix(8))..."
         }
+        // AskUserQuestion: input["questions"] is a JSON-serialized array.
+        // Extract the first question text + option count for a human-readable
+        // preview instead of showing raw JSON like [{"question":"...","options":...}].
+        if kind == .askUserQuestion, let questionsJson = input["questions"],
+           let data = questionsJson.data(using: .utf8),
+           let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+           let firstQuestion = array.first?["question"] as? String {
+            // Append option count hint (e.g. "请选择一个选项 (3 个选项)")
+            let optionCount = (array.first?["options"] as? [[String: Any]])?.count ?? 0
+            if optionCount > 0 {
+                return "\(firstQuestion) (\(optionCount) 个选项)"
+            }
+            return firstQuestion
+        }
         return input.values.first.map { String($0.prefix(60)) } ?? ""
     }
 

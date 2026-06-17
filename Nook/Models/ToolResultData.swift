@@ -326,6 +326,8 @@ struct ToolStatusDisplay {
             return ToolStatusDisplay(text: "Entering plan mode...", isRunning: true)
         case .exitPlanMode:
             return ToolStatusDisplay(text: "Exiting plan mode...", isRunning: true)
+        case .askUserQuestion:
+            return ToolStatusDisplay(text: "Waiting for answer...", isRunning: true)
         default:
             return ToolStatusDisplay(text: "Running...", isRunning: true)
         }
