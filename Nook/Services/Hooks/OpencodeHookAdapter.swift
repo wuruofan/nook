@@ -395,7 +395,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             }
             Self.logNotice("→ subagent child registered session=\(sessionId) parent=\(parentID) cwd=\(cwd) firstSighting=\(isFirstSighting)")
             // Do NOT emit .sessionStart for the child — that would create a
-            // standalone SessionState and surface it in ClaudeInstancesView.
+            // standalone SessionState and surface it in SessionListView.
             return []
         }
 

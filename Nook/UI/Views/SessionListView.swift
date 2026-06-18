@@ -1,5 +1,5 @@
 //
-//  ClaudeInstancesView.swift
+//  SessionListView.swift
 //  Nook
 //
 //  Minimal instances list matching Dynamic Island aesthetic
@@ -8,8 +8,8 @@
 import Combine
 import SwiftUI
 
-struct ClaudeInstancesView: View {
-    @ObservedObject var sessionMonitor: ClaudeSessionMonitor
+struct SessionListView: View {
+    @ObservedObject var sessionMonitor: SessionMonitor
     @ObservedObject var viewModel: NotchViewModel
     @ObservedObject var musicManager: MusicManager
     @ObservedObject var performanceMonitor: PerformanceMonitor
@@ -301,7 +301,7 @@ private extension View {
     }
 }
 
-private extension ClaudeInstancesView {
+private extension SessionListView {
     func syncLayoutMetrics() {
         guard viewModel.contentType == .instances else { return }
 

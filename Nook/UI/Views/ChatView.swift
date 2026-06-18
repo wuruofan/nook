@@ -12,7 +12,7 @@ import SwiftUI
 struct ChatView: View {
     let sessionId: String
     let initialSession: SessionState
-    let sessionMonitor: ClaudeSessionMonitor
+    let sessionMonitor: SessionMonitor
     @ObservedObject var viewModel: NotchViewModel
     let primaryTextColor: Color
     let secondaryTextColor: Color
@@ -34,7 +34,7 @@ struct ChatView: View {
     init(
         sessionId: String,
         initialSession: SessionState,
-        sessionMonitor: ClaudeSessionMonitor,
+        sessionMonitor: SessionMonitor,
         viewModel: NotchViewModel,
         primaryTextColor: Color = .white,
         secondaryTextColor: Color = .white.opacity(0.4)
