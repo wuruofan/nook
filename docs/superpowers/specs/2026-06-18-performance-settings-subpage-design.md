@@ -72,12 +72,23 @@ struct PerformanceSettingsView: View {
 - `ScrollView` + `VStack(spacing: 4)` with `.padding(.horizontal, 8).padding(.vertical, 8)`
 - Row 0 — `MenuRow(icon: "chevron.left", label: "Back", primaryTextColor: primaryTextColor, isFocused: viewModel.settingsFocusedIndex == 0) { viewModel.navigateBack() }`
 - `Divider().background(separatorColor).padding(.vertical, 4)`
-- Row 1 — `MenuToggleRow(icon: "gauge.with.dots.needle.33percent", label: "Performance Monitor", isOn: performanceMonitorEnabled) { performanceMonitorEnabled.toggle() }` — focused-index 1
-- Row 2 — `MenuToggleRow(icon: "arrow.up.arrow.down", label: "Show Performance Below Music", isOn: musicAbovePerformance) { musicAbovePerformance.toggle() }` — focused-index 2
+- Row 1 — `MenuToggleRow(icon: "gauge.with.dots.needle.33percent", label: "Performance Monitor", isOn: performanceMonitorEnabled, primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor, isFocused: viewModel.settingsFocusedIndex == 1) { performanceMonitorEnabled.toggle() }` — focused-index 1
+- Row 2 — `MenuToggleRow(icon: "arrow.up.arrow.down", label: "Show Performance Below Music", isOn: musicAbovePerformance, primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor, isFocused: viewModel.settingsFocusedIndex == 2) { musicAbovePerformance.toggle() }` — focused-index 2
+
+> **Pitfall:** `MenuToggleRow` defaults `isFocused` to `false`. Omitting
+> `isFocused` (and the two color params) silently breaks keyboard focus
+> highlighting. Always pass all three.
+
 - GeometryReader + `PerformanceSettingsContentHeightKey` to measure live content height
 - `.onPreferenceChange { viewModel.performanceSettingsContentHeight = $0 }`
-- `.onAppear { didAppear = true }` and `.onChange(of: viewModel.contentType)` re-sync
-- `.onReceive(viewModel.$keyboardActivateTrigger)` to dispatch Enter key by `settingsFocusedIndex`:
+- `.onAppear { didAppear = true }`
+- **No `.onChange(of: viewModel.contentType)` re-sync.** AgentSettingsView needs
+  it to re-copy `AppSettings.*` into `@State` vars; this view uses `@AppStorage`
+  directly (always live), so there is nothing to re-sync.
+- `.onReceive(viewModel.$keyboardActivateTrigger)` to dispatch Enter key by
+  `settingsFocusedIndex` — **this diverges from AgentSettingsView**, whose
+  `onReceive` only handles index 0 (Back). This view must handle 0, 1, and 2
+  because the two toggles need keyboard activation:
   - `0` → `viewModel.navigateBack()`
   - `1` → `performanceMonitorEnabled.toggle()`
   - `2` → `musicAbovePerformance.toggle()`
@@ -113,9 +124,30 @@ Add a corresponding `id` string in the `id` property (lines 52–61).
 
 ### openedSize (lines 124–164)
 
-Add `case .performanceSettings:` with a width matching the menu (e.g. `360`) and
-a generous initial height (e.g. `260`); the live-height measurement via
-`PerformanceSettingsContentHeightKey` will refine the actual height at runtime.
+Add `case .performanceSettings:` mirroring the `.menu` / `.agents` pattern
+exactly — same width formula and the `contentHeight + headerHeight + 12`
+height formula:
+
+```swift
+case .performanceSettings:
+    let headerHeight = max(24, geometry.deviceNotchRect.height)
+    return CGSize(
+        width: min(screenRect.width * 0.4, 480),
+        height: performanceSettingsContentHeight + headerHeight + 12
+    )
+```
+
+The width must be `min(screenRect.width * 0.4, 480)` — the same cap every
+other panel uses (menu / shortcuts / agents / performance / instances). Do
+**not** use a literal like `360`; that would make this panel narrower than
+its siblings.
+
+The height must add `headerHeight + 12` on top of the measured content
+height. `performanceSettingsContentHeight` (from the preference key) is the
+VStack content only; it does **not** include the header row (device-notch
+height, min 24pt) or the 12pt bottom padding. Omitting them clips the Back
+row under the header. The initial placeholder value `260` only applies until
+the preference key fires.
 
 ### Live height property
 
@@ -127,7 +159,9 @@ Add `let performanceSettingsItemCount: Int = 3` (Back + 2 toggles).
 
 Add `case .performanceSettings:` branches in `selectPreviousItem()` /
 `selectNextItem()` (lines 477–560), mirroring the existing `case .performance:`
-pattern.
+pattern. **Use `performanceSettingsItemCount` (the new constant), not
+`performanceItemCount`** (the existing constant for performance detail pages) —
+they are different values.
 
 ### Existing `pushTo` / `navigateBack` / `notchClose`
 
