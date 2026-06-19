@@ -475,12 +475,12 @@ class HookSocketServer {
 
         case .codex(let event):
             close(clientSocket)
-            logger.debug("Received Codex event: \(String(describing: event))")
+            socketLog("Received Codex event: \(String(describing: event))")
             codexEventHandler?(event)
 
         case .unsupportedCodex(let eventName):
             close(clientSocket)
-            logger.debug("Ignoring unsupported Codex event: \(eventName)")
+            socketLog("Ignoring unsupported Codex event: \(eventName)")
 
         case .opencode(let events):
             close(clientSocket)
@@ -543,9 +543,9 @@ class HookSocketServer {
     }
 
     private func decodeIncomingEvent(from data: Data) -> DecodedHookPayload {
-        // Cursor hook payloads can contain fields that are also accepted by
-        // Claude's broad HookEvent decoder. Let the Cursor module classify
-        // its own payload shape before trying provider-generic legacy shapes.
+        // Provider hook payloads can contain fields that are also accepted by
+        // Claude's broad HookEvent decoder. Let provider-specific modules
+        // classify their own payload shapes before trying the legacy shape.
         if let cursorEnvelope = try? JSONDecoder().decode(CursorHookEnvelope.self, from: data),
            cursorEnvelope.isCursorPayload {
             let result = CursorChatItemAdapter.shared.adaptAndConvert(cursorEnvelope)
@@ -553,10 +553,6 @@ class HookSocketServer {
                 return .cursorChatItems(result.chatItemUpdates, result.passthroughEvents)
             }
             return .cursorSkipped(eventName: cursorEnvelope.hookEventName)
-        }
-
-        if let claudeEvent = try? JSONDecoder().decode(HookEvent.self, from: data) {
-            return .claude(claudeEvent)
         }
 
         if let codexEnvelope = try? JSONDecoder().decode(CodexHookEnvelope.self, from: data) {
@@ -573,6 +569,10 @@ class HookSocketServer {
             }
             // Envelope decoded fine; adapter just had nothing to surface.
             return .opencodeSkipped(type: opencodeEnvelope.type)
+        }
+
+        if let claudeEvent = try? JSONDecoder().decode(HookEvent.self, from: data) {
+            return .claude(claudeEvent)
         }
 
         return .unknown

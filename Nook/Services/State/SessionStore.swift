@@ -374,6 +374,7 @@ actor SessionStore {
         if isNewSession {
             mixpanel?.track(event: "Session Started", properties: ["provider": "codex"])
         }
+        writeDebugLogAsync("[codex-lifecycle] sessionStart session=\(sessionId) source=\(source ?? "nil") phase=\(String(describing: session.phase)) cwd=\(session.cwd)")
         scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
@@ -401,6 +402,7 @@ actor SessionStore {
         )
 
         sessions[sessionId] = session
+        writeDebugLogAsync("[codex-lifecycle] userPromptSubmit session=\(sessionId) phase=\(String(describing: session.phase)) promptChars=\(trimmedPrompt?.count ?? 0)")
         scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
@@ -450,6 +452,7 @@ actor SessionStore {
         )
 
         sessions[sessionId] = session
+        writeDebugLogAsync("[codex-lifecycle] toolStarted session=\(sessionId) tool=\(toolName) toolUseId=\(toolUseId ?? "nil") phase=\(String(describing: session.phase))")
         let updates = CodexChatItemAdapter.updates(
             from: .preTool(
                 sessionId: sessionId,
@@ -527,6 +530,7 @@ actor SessionStore {
         }
 
         sessions[sessionId] = session
+        writeDebugLogAsync("[codex-lifecycle] toolFinished session=\(sessionId) tool=\(toolName) toolUseId=\(completedToolId ?? "nil") isError=\(isError) phase=\(String(describing: session.phase)) completionPending=\(completionPending)")
         let updates = CodexChatItemAdapter.updates(
             from: .postTool(
                 sessionId: sessionId,
@@ -603,6 +607,7 @@ actor SessionStore {
             usage: session.conversationInfo.usage
         )
         sessions[sessionId] = session
+        writeDebugLogAsync("[codex-lifecycle] permissionRequest session=\(sessionId) tool=\(displayToolName) toolUseId=\(resolvedToolUseId ?? "nil") phase=\(String(describing: session.phase))")
         scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
@@ -690,6 +695,7 @@ actor SessionStore {
         finishDanglingCodexTools(in: &session)
         session.toolTracker.inProgress.removeAll()
         sessions[sessionId] = session
+        writeDebugLogAsync("[codex-lifecycle] stop session=\(sessionId) phase=\(String(describing: session.phase)) chatItems=\(session.chatItems.count)")
         scheduleCodexTranscriptSync(sessionId: sessionId)
         scheduleCodexCompletionNotification(sessionId: sessionId)
     }
@@ -1076,6 +1082,7 @@ actor SessionStore {
     private func scheduleCodexCompletionNotification(sessionId: String) {
         cancelPendingCodexCompletionNotification(sessionId: sessionId)
 
+        writeDebugLogAsync("[codex-lifecycle] completionNotificationScheduled session=\(sessionId)")
         pendingCodexCompletionNotifications[sessionId] = Task { [weak self, codexCompletionDebounceNs] in
             try? await Task.sleep(nanoseconds: codexCompletionDebounceNs)
             guard !Task.isCancelled else { return }
@@ -1090,15 +1097,26 @@ actor SessionStore {
 
     private func emitCodexCompletionNotification(sessionId: String) {
         pendingCodexCompletionNotifications.removeValue(forKey: sessionId)
-        guard var session = sessions[sessionId],
-              session.provider == .codex,
-              session.phase == .idle,
-              session.completionNotificationAt == nil else {
+        guard var session = sessions[sessionId] else {
+            writeDebugLogAsync("[codex-lifecycle] completionNotificationSkipped session=\(sessionId) reason=missing-session")
+            return
+        }
+        guard session.provider == .codex else {
+            writeDebugLogAsync("[codex-lifecycle] completionNotificationSkipped session=\(sessionId) reason=provider-\(session.provider.rawValue)")
+            return
+        }
+        guard session.phase == .idle else {
+            writeDebugLogAsync("[codex-lifecycle] completionNotificationSkipped session=\(sessionId) reason=phase-\(String(describing: session.phase))")
+            return
+        }
+        guard session.completionNotificationAt == nil else {
+            writeDebugLogAsync("[codex-lifecycle] completionNotificationSkipped session=\(sessionId) reason=already-emitted")
             return
         }
 
         session.completionNotificationAt = Date()
         sessions[sessionId] = session
+        writeDebugLogAsync("[codex-lifecycle] completionNotificationEmitted session=\(sessionId)")
         publishState()
     }
 
@@ -2086,6 +2104,7 @@ actor SessionStore {
                 if quietDuration > quietLimit {
                     var updatedSession = session
                     Self.logger.info("Codex session \(sessionId.prefix(8), privacy: .public) active state expired after \(Int(quietDuration), privacy: .public)s quiet; marking idle")
+                    writeDebugLogAsync("[codex-lifecycle] activeQuietExpired session=\(sessionId) quietSeconds=\(Int(quietDuration)) limitSeconds=\(Int(quietLimit)) phase=\(String(describing: session.phase))")
                     updatedSession.phase = .idle
                     updatedSession.completionNotificationAt = nil
                     updatedSession.toolTracker.inProgress.removeAll()

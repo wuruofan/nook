@@ -67,18 +67,32 @@ struct CodexHookInstaller {
     private static func enableHooksFeature() {
         let existing = (try? String(contentsOf: configFile, encoding: .utf8)) ?? ""
 
-        if existing.contains("hooks = true") {
+        if rangeOfCanonicalHooksFlag(true, in: existing) != nil {
             return
         }
 
         let updated: String
-        if existing.contains("hooks = false") {
-            updated = existing.replacingOccurrences(of: "hooks = false", with: "hooks = true")
-        } else if let featureRange = existing.range(of: "[features]") {
+        if let disabledFlagRange = rangeOfCanonicalHooksFlag(false, in: existing) {
+            let disabledFlag = String(existing[disabledFlagRange])
+            let enabledFlag = disabledFlag.replacingOccurrences(
+                of: #"(?m)^(\s*)hooks\s*=\s*false(\s*(?:#.*)?)$"#,
+                with: "$1hooks = true$2",
+                options: .regularExpression
+            )
+            updated = existing.replacingCharacters(in: disabledFlagRange, with: enabledFlag)
+        } else if let featureRange = existing.range(
+            of: #"(?m)^\s*\[features\]\s*$"#,
+            options: .regularExpression
+        ) {
             let tail = existing[featureRange.upperBound...]
-            if let nextSectionRange = tail.range(of: #"\n\[[^\n]+\]"#, options: .regularExpression) {
+            if let nextSectionRange = tail.range(
+                of: #"(?m)^\s*\[[^\n]+\]\s*$"#,
+                options: .regularExpression
+            ) {
                 let insertionPoint = nextSectionRange.lowerBound
-                updated = String(existing[..<insertionPoint]) + "\nhooks = true" + String(existing[insertionPoint...])
+                let prefix = String(existing[..<insertionPoint])
+                let separator = prefix.hasSuffix("\n") ? "" : "\n"
+                updated = prefix + separator + "hooks = true\n" + String(existing[insertionPoint...])
             } else if existing.hasSuffix("\n") {
                 updated = existing + "hooks = true\n"
             } else {
@@ -92,6 +106,30 @@ struct CodexHookInstaller {
         }
 
         try? updated.write(to: configFile, atomically: true, encoding: .utf8)
+    }
+
+    private static func rangeOfCanonicalHooksFlag(_ value: Bool, in text: String) -> Range<String.Index>? {
+        guard let featuresSectionRange = featuresSectionBodyRange(in: text) else { return nil }
+        let boolValue = value ? "true" : "false"
+        let pattern = #"(?m)^\s*hooks\s*=\s*"# + boolValue + #"\s*(?:#.*)?$"#
+        return text[featuresSectionRange].range(of: pattern, options: .regularExpression)
+    }
+
+    private static func featuresSectionBodyRange(in text: String) -> Range<String.Index>? {
+        guard let featureRange = text.range(
+            of: #"(?m)^\s*\[features\]\s*$"#,
+            options: .regularExpression
+        ) else {
+            return nil
+        }
+
+        let bodyStart = featureRange.upperBound
+        let tail = text[bodyStart...]
+        let bodyEnd = tail.range(
+            of: #"(?m)^\s*\[[^\n]+\]\s*$"#,
+            options: .regularExpression
+        )?.lowerBound ?? text.endIndex
+        return bodyStart..<bodyEnd
     }
 
     private static func installHooksConfiguration() {
