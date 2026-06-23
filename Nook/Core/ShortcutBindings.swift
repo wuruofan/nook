@@ -83,9 +83,9 @@ enum ShortcutAction: String, CaseIterable, Codable {
         switch self {
         case .toggleNotch:     return "Toggle Main Page"
         case .closeNotch:      return "Close Notch"
-        case .selectPrevious:  return "Previous Session"
-        case .selectNext:      return "Next Session"
-        case .enterSession:    return "Open Session"
+        case .selectPrevious:  return "Navigate Up"
+        case .selectNext:      return "Navigate Down"
+        case .enterSession:    return "Open"
         case .navigateBack:    return "Go Back"
         case .openSettings:    return "Open Settings"
         case .scrollToBottom:  return "Scroll to Bottom"
