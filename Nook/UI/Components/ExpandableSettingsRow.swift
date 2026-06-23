@@ -11,6 +11,10 @@ import SwiftUI
 
 struct ExpandableSettingsRow<Content: View>: View {
     let icon: String
+    /// Optional override for the leading icon (brand logo etc.). When
+    /// provided, replaces the SF Symbol `icon`. Same API shape as
+    /// `MenuRow.customIcon`.
+    var customIcon: AnyView? = nil
     let label: String
     var trailingText: String? = nil
     var primaryTextColor: Color = .white
@@ -24,6 +28,7 @@ struct ExpandableSettingsRow<Content: View>: View {
 
     init(
         icon: String,
+        customIcon: AnyView? = nil,
         label: String,
         trailingText: String? = nil,
         primaryTextColor: Color = .white,
@@ -33,6 +38,7 @@ struct ExpandableSettingsRow<Content: View>: View {
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.icon = icon
+        self.customIcon = customIcon
         self.label = label
         self.trailingText = trailingText
         self.primaryTextColor = primaryTextColor
@@ -46,6 +52,18 @@ struct ExpandableSettingsRow<Content: View>: View {
         primaryTextColor.opacity(isHovered ? 1.0 : 0.82)
     }
 
+    @ViewBuilder
+    private var iconView: some View {
+        if let customIcon {
+            customIcon.frame(width: 16)
+        } else {
+            Image(systemName: icon)
+                .font(.system(size: 12))
+                .foregroundColor(textColor)
+                .frame(width: 16)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Button {
@@ -54,10 +72,7 @@ struct ExpandableSettingsRow<Content: View>: View {
                 }
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: icon)
-                        .font(.system(size: 12))
-                        .foregroundColor(textColor)
-                        .frame(width: 16)
+                    iconView
 
                     Text(label)
                         .font(.system(size: 13, weight: .medium))
