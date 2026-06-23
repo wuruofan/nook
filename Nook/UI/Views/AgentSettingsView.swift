@@ -28,7 +28,10 @@ struct AgentSettingsView: View {
     private let claudeChooseFolderIndex = 3
     private var claudeHooksIndex: Int? {
         guard claudeInstalled else { return nil }
-        return 4
+        // Claude hooks sits right after Claude main (and the two picker
+        // options, when the picker is expanded). So index is 2 collapsed,
+        // 4 expanded.
+        return claudeMainIndex + 1 + (viewModel.agentsClaudeDirPickerExpanded ? 2 : 0)
     }
     private var codexMainIndex: Int {
         // Codex main sits right after Claude's block (main + optional picker + optional hooks).
@@ -91,12 +94,15 @@ struct AgentSettingsView: View {
             }
         }
         // If the Claude picker collapses (mouse click or keyboard) while the
-        // focus was inside the picker range, snap focus back to Claude main
-        // so the highlight stays consistent with what's rendered.
+        // focus was inside the picker block, snap focus back to Claude main
+        // so the highlight stays consistent with what's rendered. The picker
+        // block covers indices 2..4 when expanded: the two picker options
+        // (2, 3) vanish, and Claude hooks shifts from 4 → 2, so a stale
+        // focus at 4 would land on Codex hooks after collapse.
         .onChange(of: viewModel.agentsClaudeDirPickerExpanded) { _, isExpanded in
             if !isExpanded {
                 let i = viewModel.settingsFocusedIndex
-                if i == claudeAutoDetectIndex || i == claudeChooseFolderIndex {
+                if (2...4).contains(i) {
                     viewModel.settingsFocusedIndex = claudeMainIndex
                 }
             }
