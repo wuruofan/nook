@@ -81,20 +81,32 @@ struct AgentSettingsView: View {
         let hooksOn = hooksInstalled(provider)
 
         VStack(spacing: 2) {
-            agentMainRow(provider: provider, installed: installed)
+            // Claude uses the same `ExpandableSettingsRow` as the home-page
+            // Sound/Screen pickers and the Performance Visible Metrics
+            // picker — so hover/focus styling and the expand/collapse
+            // animation are consistent. (The shared component also avoids
+            // the agents-page scrollbar flash: see `NotchView`'s
+            // `.animation(.settingsExpand, value: notchSize)` for the
+            // root-cause fix.)
+            if provider == .claude {
+                ExpandableSettingsRow(
+                    icon: provider.systemImage,
+                    label: provider.displayName,
+                    trailingText: AgentPathsResolver.displayPath(for: provider),
+                    primaryTextColor: primaryTextColor,
+                    secondaryTextColor: secondaryTextColor,
+                    isExpanded: $claudeDirPickerExpanded
+                ) {
+                    claudeDirPickerOptions
+                }
+            } else {
+                // Codex / OpenCode: static row (no picker to expand).
+                agentMainRow(provider: provider, installed: installed)
+            }
 
             if installed {
-                VStack(spacing: 2) {
-                    if provider == .claude && claudeDirPickerExpanded {
-                        claudeDirPickerOptions
-                            .padding(.leading, 8)
-                            .transition(.opacity.combined(with: .move(edge: .top)))
-                    }
-
-                    hooksToggle(provider: provider, hooksOn: hooksOn)
-                }
-                .padding(.leading, 28)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                hooksToggle(provider: provider, hooksOn: hooksOn)
+                    .padding(.leading, 28)
             }
         }
     }

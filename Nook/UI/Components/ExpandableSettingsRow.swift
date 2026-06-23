@@ -90,7 +90,13 @@ struct ExpandableSettingsRow<Content: View>: View {
             .buttonStyle(.plain)
             .onHover { isHovered = $0 }
 
-            if isExpanded {
+            // Render the same content tree always so the natural height is
+            // measured even while collapsed. ExpandableContent clamps the
+            // visible height to 0 (via .frame + .clipped) when isExpanded is
+            // false, but the background GeometryReader still sees the full
+            // natural size — needed so the first expand animates smoothly
+            // instead of snapping to a measured value.
+            ExpandableContent(isExpanded: isExpanded) {
                 VStack(spacing: 2) {
                     content()
                 }

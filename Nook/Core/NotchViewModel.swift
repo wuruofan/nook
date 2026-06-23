@@ -113,9 +113,13 @@ class NotchViewModel: ObservableObject {
     /// Live-measured content height of the menu VStack (via GeometryReader).
     @Published var menuContentHeight: CGFloat = 552
     /// Live-measured content height of the agents page VStack (via GeometryReader).
-    @Published var agentsContentHeight: CGFloat = 260
+    /// Default is sized for the typical "all 3 providers installed, no picker" state so
+    /// the panel doesn't have to grow on first appearance (which would briefly show a
+    /// scrollbar while content overflows the still-shrinking frame).
+    @Published var agentsContentHeight: CGFloat = 380
     /// Live-measured content height of the performance settings page VStack.
-    @Published var performanceSettingsContentHeight: CGFloat = 260
+    /// Default covers the "Visible Metrics" row collapsed state.
+    @Published var performanceSettingsContentHeight: CGFloat = 230
     /// Live-measured content heights of performance pages, keyed by section.
     @Published var performanceContentHeights: [PerformanceSection: CGFloat] = [:]
 
