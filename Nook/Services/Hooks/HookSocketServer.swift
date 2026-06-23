@@ -118,6 +118,12 @@ typealias OpencodeHookEventHandler = @Sendable (OpencodeSessionEvent) -> Void
 /// Callback for OpenCode chat item updates (from OpencodeChatItemAdapter)
 typealias OpencodeChatItemsHandler = @Sendable ([ChatItemUpdate]) -> Void
 
+/// Callback for Cursor hook events
+typealias CursorHookEventHandler = @Sendable (CursorSessionEvent) -> Void
+
+/// Callback for Cursor chat item updates (from CursorChatItemAdapter)
+typealias CursorChatItemsHandler = @Sendable ([ChatItemUpdate]) -> Void
+
 
 /// Callback for permission response failures (socket died)
 typealias PermissionFailureHandler = @Sendable (_ sessionId: String, _ toolUseId: String) -> Void
@@ -134,6 +140,8 @@ class HookSocketServer {
     private var codexEventHandler: CodexHookEventHandler?
     private var opencodeEventHandler: OpencodeHookEventHandler?
     private var opencodeChatItemsHandler: OpencodeChatItemsHandler?
+    private var cursorEventHandler: CursorHookEventHandler?
+    private var cursorChatItemsHandler: CursorChatItemsHandler?
     private var permissionFailureHandler: PermissionFailureHandler?
     private let queue = DispatchQueue(label: "com.celestial.Nook.socket", qos: .userInitiated)
 
@@ -155,7 +163,9 @@ class HookSocketServer {
         onPermissionFailure: PermissionFailureHandler? = nil,
         onCodexEvent: CodexHookEventHandler? = nil,
         onOpencodeEvent: OpencodeHookEventHandler? = nil,
-        onOpencodeChatItems: OpencodeChatItemsHandler? = nil
+        onOpencodeChatItems: OpencodeChatItemsHandler? = nil,
+        onCursorEvent: CursorHookEventHandler? = nil,
+        onCursorChatItems: CursorChatItemsHandler? = nil
     ) {
         queue.async { [weak self] in
             self?.startServer(
@@ -163,7 +173,9 @@ class HookSocketServer {
                 onPermissionFailure: onPermissionFailure,
                 onCodexEvent: onCodexEvent,
                 onOpencodeEvent: onOpencodeEvent,
-                onOpencodeChatItems: onOpencodeChatItems
+                onOpencodeChatItems: onOpencodeChatItems,
+                onCursorEvent: onCursorEvent,
+                onCursorChatItems: onCursorChatItems
             )
         }
     }
@@ -173,7 +185,9 @@ class HookSocketServer {
         onPermissionFailure: PermissionFailureHandler?,
         onCodexEvent: CodexHookEventHandler?,
         onOpencodeEvent: OpencodeHookEventHandler?,
-        onOpencodeChatItems: OpencodeChatItemsHandler?
+        onOpencodeChatItems: OpencodeChatItemsHandler?,
+        onCursorEvent: CursorHookEventHandler?,
+        onCursorChatItems: CursorChatItemsHandler?
     ) {
         guard serverSocket < 0 else { return }
 
@@ -181,6 +195,8 @@ class HookSocketServer {
         codexEventHandler = onCodexEvent
         opencodeEventHandler = onOpencodeEvent
         opencodeChatItemsHandler = onOpencodeChatItems
+        cursorEventHandler = onCursorEvent
+        cursorChatItemsHandler = onCursorChatItems
         permissionFailureHandler = onPermissionFailure
 
         unlink(Self.socketPath)
@@ -248,6 +264,9 @@ class HookSocketServer {
         unlink(Self.socketPath)
         codexEventHandler = nil
         opencodeChatItemsHandler = nil
+        opencodeEventHandler = nil
+        cursorEventHandler = nil
+        cursorChatItemsHandler = nil
 
         permissionsLock.lock()
         for (_, pending) in pendingPermissions {
@@ -456,12 +475,12 @@ class HookSocketServer {
 
         case .codex(let event):
             close(clientSocket)
-            logger.debug("Received Codex event: \(String(describing: event))")
+            socketLog("Received Codex event: \(event.socketLogSummary)")
             codexEventHandler?(event)
 
         case .unsupportedCodex(let eventName):
             close(clientSocket)
-            logger.debug("Ignoring unsupported Codex event: \(eventName)")
+            socketLog("Ignoring unsupported Codex event: \(eventName)")
 
         case .opencode(let events):
             close(clientSocket)
@@ -490,6 +509,20 @@ class HookSocketServer {
             // this event (e.g. session.status busy, step-start, session.diff).
             logger.debug("OpenCode event skipped by adapter: type=\(type)")
 
+        case .cursorChatItems(let chatItems, let passthrough):
+            close(clientSocket)
+            if !chatItems.isEmpty {
+                cursorChatItemsHandler?(chatItems)
+            }
+            for event in passthrough {
+                socketLog("Received Cursor passthrough: \(String(describing: event))")
+                cursorEventHandler?(event)
+            }
+
+        case .cursorSkipped(let eventName):
+            close(clientSocket)
+            logger.debug("Cursor event skipped by adapter: event=\(eventName)")
+
         case .unknown:
             let raw = String(data: data, encoding: .utf8) ?? "?"
             socketLog("Failed to parse event (raw=\(raw))")
@@ -503,16 +536,27 @@ class HookSocketServer {
         case opencode([OpencodeSessionEvent])
         case opencodeChatItems([ChatItemUpdate], [OpencodeSessionEvent])
         case opencodeSkipped(type: String)
+        case cursorChatItems([ChatItemUpdate], [CursorSessionEvent])
+        case cursorSkipped(eventName: String)
         case unsupportedCodex(eventName: String)
         case unknown
     }
 
     private func decodeIncomingEvent(from data: Data) -> DecodedHookPayload {
-        if let claudeEvent = try? JSONDecoder().decode(HookEvent.self, from: data) {
-            return .claude(claudeEvent)
+        // Provider hook payloads can contain fields that are also accepted by
+        // Claude's broad HookEvent decoder. Let provider-specific modules
+        // classify their own payload shapes before trying the legacy shape.
+        if let cursorEnvelope = try? JSONDecoder().decode(CursorHookEnvelope.self, from: data),
+           cursorEnvelope.isCursorPayload {
+            let result = CursorChatItemAdapter.shared.adaptAndConvert(cursorEnvelope)
+            if !result.chatItemUpdates.isEmpty || !result.passthroughEvents.isEmpty {
+                return .cursorChatItems(result.chatItemUpdates, result.passthroughEvents)
+            }
+            return .cursorSkipped(eventName: cursorEnvelope.hookEventName)
         }
 
-        if let codexEnvelope = try? JSONDecoder().decode(CodexHookEnvelope.self, from: data) {
+        if let codexEnvelope = try? JSONDecoder().decode(CodexHookEnvelope.self, from: data),
+           codexEnvelope.isCodexPayload {
             guard let codexEvent = CodexHookAdapter.adapt(codexEnvelope) else {
                 return .unsupportedCodex(eventName: codexEnvelope.event)
             }
@@ -526,6 +570,10 @@ class HookSocketServer {
             }
             // Envelope decoded fine; adapter just had nothing to surface.
             return .opencodeSkipped(type: opencodeEnvelope.type)
+        }
+
+        if let claudeEvent = try? JSONDecoder().decode(HookEvent.self, from: data) {
+            return .claude(claudeEvent)
         }
 
         return .unknown
@@ -671,6 +719,37 @@ class HookSocketServer {
         if !writeSuccess {
             permissionFailureHandler?(sessionId, pending.toolUseId)
         }
+    }
+}
+
+private extension CodexSessionEvent {
+    var socketLogSummary: String {
+        switch self {
+        case .sessionStart(let sessionId, let cwd, let source):
+            return "sessionStart session=\(short(sessionId)) source=\(source ?? "nil") cwd=\(cwd)"
+        case .userPromptSubmit(let sessionId, let cwd, let prompt):
+            return "userPromptSubmit session=\(short(sessionId)) promptChars=\(prompt?.count ?? 0) cwd=\(cwd)"
+        case .preTool(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
+            return "preTool session=\(short(sessionId)) tool=\(toolName) toolUseId=\(toolUseId ?? "nil") inputKeys=\(input.keys.sorted().joined(separator: ",")) inputSummaryChars=\(inputSummary?.count ?? 0) cwd=\(cwd)"
+        case .postTool(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary, let output, let isError):
+            return "postTool session=\(short(sessionId)) tool=\(toolName) toolUseId=\(toolUseId ?? "nil") inputSummaryChars=\(inputSummary?.count ?? 0) outputChars=\(output?.count ?? 0) isError=\(isError) cwd=\(cwd)"
+        case .permissionRequest(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
+            return "permissionRequest session=\(short(sessionId)) tool=\(toolName ?? "nil") toolUseId=\(toolUseId ?? "nil") inputKeys=\(input.keys.sorted().joined(separator: ",")) inputSummaryChars=\(inputSummary?.count ?? 0) cwd=\(cwd)"
+        case .compactingStarted(let sessionId, let cwd):
+            return "compactingStarted session=\(short(sessionId)) cwd=\(cwd)"
+        case .compactingFinished(let sessionId, let cwd):
+            return "compactingFinished session=\(short(sessionId)) cwd=\(cwd)"
+        case .subagentStarted(let sessionId, let cwd):
+            return "subagentStarted session=\(short(sessionId)) cwd=\(cwd)"
+        case .subagentStopped(let sessionId, let cwd):
+            return "subagentStopped session=\(short(sessionId)) cwd=\(cwd)"
+        case .stop(let sessionId, let cwd):
+            return "stop session=\(short(sessionId)) cwd=\(cwd)"
+        }
+    }
+
+    private func short(_ sessionId: String) -> String {
+        String(sessionId.prefix(8))
     }
 }
 

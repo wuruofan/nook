@@ -55,6 +55,9 @@ struct ChatView: View {
         if initialSession.provider == .codex {
             cachedHistory = initialSession.chatItems
             alreadyLoaded = false
+        } else if initialSession.provider == .cursor {
+            cachedHistory = initialSession.chatItems
+            alreadyLoaded = true
         } else {
             cachedHistory = ChatHistoryManager.shared.history(for: sessionId)
             alreadyLoaded = !cachedHistory.isEmpty
@@ -165,12 +168,6 @@ struct ChatView: View {
                 // Always update - the @Published ensures we only get notified on real changes
                 // This allows tool status updates (waitingForApproval -> running) to reflect
                 if countChanged || lastItemChanged || newHistory != history {
-                    // DIAGNOSTIC (#70): dump incoming history to find where second thinking is lost
-                    let newThinkingCount = newHistory.filter { if case .thinking = $0.type { return true } else { return false } }.count
-                    let newThinkingIds = newHistory.compactMap { item -> String? in
-                        if case .thinking = item.type { return item.id } else { return nil }
-                    }
-                    DebugLog.shared.write("[chat-view] history update session=\(sessionId) total=\(newHistory.count) thinkingCount=\(newThinkingCount) thinkingIds=\(newThinkingIds.joined(separator: ","))")
                     // Track new messages when autoscroll is paused
                     if isAutoscrollPaused && newHistory.count > previousHistoryCount {
                         let addedCount = newHistory.count - previousHistoryCount
@@ -300,6 +297,8 @@ struct ChatView: View {
             return "Codex needs your input"
         case .opencode:
             return "OpenCode needs your input"
+        case .cursor:
+            return "Cursor needs your input"
         }
     }
 
@@ -1614,6 +1613,7 @@ struct ChatInteractivePromptBar: View {
         case .claude: return "Claude Code needs your input"
         case .codex: return "Codex needs your input"
         case .opencode: return "OpenCode needs your input"
+        case .cursor: return "Cursor needs your input"
         }
     }
 
@@ -1625,6 +1625,7 @@ struct ChatInteractivePromptBar: View {
         case .claude: return "Claude Code"
         case .codex: return "Codex"
         case .opencode: return "OpenCode"
+        case .cursor: return "Cursor"
         }
     }
 
