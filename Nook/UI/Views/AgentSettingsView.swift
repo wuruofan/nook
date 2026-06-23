@@ -86,11 +86,18 @@ struct AgentSettingsView: View {
         .onAppear {
             didAppear = true
             refreshStates()
+            // Match the convention used by SoundPickerRow / ScreenPickerRow /
+            // ChatView section toggles: every picker defaults to closed and
+            // resets when the page is re-entered. Perf Metrics is the only
+            // outlier (its expansion persists via VM-level @Published) —
+            // we don't follow that pattern here.
+            viewModel.agentsClaudeDirPickerExpanded = false
         }
         .onChange(of: viewModel.contentType) { _, newValue in
             if newValue == .agents {
                 didAppear = true
                 refreshStates()
+                viewModel.agentsClaudeDirPickerExpanded = false
             }
         }
         // If the Claude picker collapses (mouse click or keyboard) while the
