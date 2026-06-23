@@ -6,7 +6,6 @@ struct AgentSettingsView: View {
     let secondaryTextColor: Color
     let separatorColor: Color
 
-    @State private var claudeDirPickerExpanded = false
     @State private var currentClaudeDir: String = AppSettings.claudeDirectoryName
     @State private var claudeHooksInstalled = false
     @State private var codexHooksInstalled = false
@@ -17,6 +16,45 @@ struct AgentSettingsView: View {
     private var claudeInstalled: Bool { AgentPathsResolver.isInstalled(.claude) }
     private var codexInstalled: Bool { AgentPathsResolver.isInstalled(.codex) }
     private var opencodeInstalled: Bool { AgentPathsResolver.isInstalled(.opencode) }
+
+    // MARK: - Keyboard nav indices
+    //
+    // Visual order: Back, Claude main, [Claude picker × 2 if expanded],
+    // [Claude hooks if installed], Codex main, [Codex hooks if installed],
+    // OpenCode main, [OpenCode hooks if installed], Debug log.
+    private let backIndex = 0
+    private let claudeMainIndex = 1
+    private let claudeAutoDetectIndex = 2
+    private let claudeChooseFolderIndex = 3
+    private var claudeHooksIndex: Int? {
+        guard claudeInstalled else { return nil }
+        return 4
+    }
+    private var codexMainIndex: Int {
+        // Codex main sits right after Claude's block (main + optional picker + optional hooks).
+        var idx = claudeMainIndex + 1
+        if viewModel.agentsClaudeDirPickerExpanded { idx += 2 }
+        if claudeInstalled { idx += 1 }
+        return idx
+    }
+    private var codexHooksIndex: Int? {
+        guard codexInstalled else { return nil }
+        return codexMainIndex + 1
+    }
+    private var opencodeMainIndex: Int {
+        var idx = codexMainIndex + 1
+        if codexInstalled { idx += 1 }
+        return idx
+    }
+    private var opencodeHooksIndex: Int? {
+        guard opencodeInstalled else { return nil }
+        return opencodeMainIndex + 1
+    }
+    private var debugLogIndex: Int {
+        var idx = opencodeMainIndex + 1
+        if opencodeInstalled { idx += 1 }
+        return idx
+    }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
@@ -52,10 +90,64 @@ struct AgentSettingsView: View {
                 refreshStates()
             }
         }
+        // If the Claude picker collapses (mouse click or keyboard) while the
+        // focus was inside the picker range, snap focus back to Claude main
+        // so the highlight stays consistent with what's rendered.
+        .onChange(of: viewModel.agentsClaudeDirPickerExpanded) { _, isExpanded in
+            if !isExpanded {
+                let i = viewModel.settingsFocusedIndex
+                if i == claudeAutoDetectIndex || i == claudeChooseFolderIndex {
+                    viewModel.settingsFocusedIndex = claudeMainIndex
+                }
+            }
+        }
         .onReceive(viewModel.$keyboardActivateTrigger) { trigger in
             guard trigger != nil, didAppear else { return }
-            if viewModel.settingsFocusedIndex == 0 {
-                viewModel.navigateBack()
+            performFocusedAction()
+        }
+    }
+
+    // MARK: - Keyboard activation
+
+    private func performFocusedAction() {
+        let i = viewModel.settingsFocusedIndex
+        switch i {
+        case backIndex:
+            viewModel.navigateBack()
+        case claudeMainIndex:
+            withAnimation(.easeInOut(duration: 0.2)) {
+                viewModel.agentsClaudeDirPickerExpanded.toggle()
+            }
+        case codexMainIndex, opencodeMainIndex:
+            break // Static rows — no action on activate.
+        case debugLogIndex:
+            toggleDebugLog()
+        case claudeAutoDetectIndex where viewModel.agentsClaudeDirPickerExpanded:
+            applyClaudeDirChoice(path: "")
+        case claudeChooseFolderIndex where viewModel.agentsClaudeDirPickerExpanded:
+            openClaudeFolderPicker()
+        default:
+            // Hooks toggles
+            if i == claudeHooksIndex {
+                toggleHooks(provider: .claude, currentlyOn: hooksInstalled(.claude))
+            } else if i == codexHooksIndex {
+                toggleHooks(provider: .codex, currentlyOn: hooksInstalled(.codex))
+            } else if i == opencodeHooksIndex {
+                toggleHooks(provider: .opencode, currentlyOn: hooksInstalled(.opencode))
+            }
+        }
+    }
+
+    private func toggleDebugLog() {
+        withAnimation {
+            debugLogOn.toggle()
+            AppSettings.debugLogEnabled = debugLogOn
+            if debugLogOn {
+                DebugLog.shared.enable()
+                DebugLog.shared.write("debug log enabled from settings UI")
+            } else {
+                DebugLog.shared.write("debug log disabled from settings UI")
+                DebugLog.shared.disable()
             }
         }
     }
@@ -67,7 +159,7 @@ struct AgentSettingsView: View {
             icon: "chevron.left",
             label: "Back",
             primaryTextColor: primaryTextColor,
-            isFocused: viewModel.settingsFocusedIndex == 0
+            isFocused: viewModel.settingsFocusedIndex == backIndex
         ) {
             viewModel.navigateBack()
         }
@@ -95,13 +187,14 @@ struct AgentSettingsView: View {
                     trailingText: AgentPathsResolver.displayPath(for: provider),
                     primaryTextColor: primaryTextColor,
                     secondaryTextColor: secondaryTextColor,
-                    isExpanded: $claudeDirPickerExpanded
+                    isFocused: viewModel.settingsFocusedIndex == claudeMainIndex,
+                    isExpanded: $viewModel.agentsClaudeDirPickerExpanded
                 ) {
                     claudeDirPickerOptions
                 }
             } else {
                 // Codex / OpenCode: static row (no picker to expand).
-                agentMainRow(provider: provider, installed: installed)
+                agentMainRow(provider: provider, installed: installed, focusedIndex: provider == .codex ? codexMainIndex : opencodeMainIndex)
             }
 
             if installed {
@@ -114,15 +207,19 @@ struct AgentSettingsView: View {
     // MARK: - Main Row (merged: icon + name + path + hooks indicator)
 
     @ViewBuilder
-    private func agentMainRow(provider: SessionProvider, installed: Bool) -> some View {
-        let bg = RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.03))
+    private func agentMainRow(provider: SessionProvider, installed: Bool, focusedIndex: Int) -> some View {
+        let isFocused = viewModel.settingsFocusedIndex == focusedIndex
+        let bg = RoundedRectangle(cornerRadius: 8)
+            .fill(isFocused ? Color.white.opacity(0.12) : Color.white.opacity(0.03))
+        let border = RoundedRectangle(cornerRadius: 8)
+            .stroke(isFocused ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
 
         if provider == .claude {
             // Claude: entire row is one button that expands the dir picker.
             // Status indicator is purely decorative here.
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    claudeDirPickerExpanded.toggle()
+                    viewModel.agentsClaudeDirPickerExpanded.toggle()
                 }
             } label: {
                 HStack(spacing: 10) {
@@ -143,7 +240,7 @@ struct AgentSettingsView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
 
-                    Image(systemName: claudeDirPickerExpanded ? "chevron.up" : "chevron.down")
+                    Image(systemName: viewModel.agentsClaudeDirPickerExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 9))
                         .foregroundColor(secondaryTextColor)
                 }
@@ -152,6 +249,7 @@ struct AgentSettingsView: View {
             }
             .buttonStyle(.plain)
             .background(bg)
+            .overlay(border)
         } else {
             // Codex / OpenCode: static row with decorative indicator.
             HStack(spacing: 10) {
@@ -183,6 +281,7 @@ struct AgentSettingsView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .background(bg)
+            .overlay(border)
         }
     }
 
@@ -196,7 +295,8 @@ struct AgentSettingsView: View {
                 sublabelDesign: .monospaced,
                 isSelected: !isCustomClaudeDir,
                 primaryTextColor: primaryTextColor,
-                secondaryTextColor: secondaryTextColor
+                secondaryTextColor: secondaryTextColor,
+                isFocused: viewModel.settingsFocusedIndex == claudeAutoDetectIndex
             ) {
                 applyClaudeDirChoice(path: "")
             }
@@ -207,7 +307,8 @@ struct AgentSettingsView: View {
                 sublabelDesign: .monospaced,
                 isSelected: isCustomClaudeDir,
                 primaryTextColor: primaryTextColor,
-                secondaryTextColor: secondaryTextColor
+                secondaryTextColor: secondaryTextColor,
+                isFocused: viewModel.settingsFocusedIndex == claudeChooseFolderIndex
             ) {
                 openClaudeFolderPicker()
             }
@@ -225,12 +326,19 @@ struct AgentSettingsView: View {
     // MARK: - Hooks Toggle
 
     private func hooksToggle(provider: SessionProvider, hooksOn: Bool) -> some View {
-        SettingsSubToggleRow(
+        let focusedIndex: Int? = {
+            switch provider {
+            case .claude:   return claudeHooksIndex
+            case .codex:    return codexHooksIndex
+            case .opencode: return opencodeHooksIndex
+            }
+        }()
+        return SettingsSubToggleRow(
             label: "Hooks",
             isOn: hooksOn,
             primaryTextColor: primaryTextColor,
             secondaryTextColor: secondaryTextColor,
-            isFocused: false,
+            isFocused: focusedIndex.map { viewModel.settingsFocusedIndex == $0 } ?? false,
             locked: false
         ) {
             withAnimation {
@@ -246,18 +354,9 @@ struct AgentSettingsView: View {
     /// Off by default because the file grows during normal use and is
     /// only useful when reproducing a specific bug.
     private var debugLogSection: some View {
-        Button {
-            withAnimation {
-                debugLogOn.toggle()
-                AppSettings.debugLogEnabled = debugLogOn
-                if debugLogOn {
-                    DebugLog.shared.enable()
-                    DebugLog.shared.write("debug log enabled from settings UI")
-                } else {
-                    DebugLog.shared.write("debug log disabled from settings UI")
-                    DebugLog.shared.disable()
-                }
-            }
+        let isFocused = viewModel.settingsFocusedIndex == debugLogIndex
+        return Button {
+            toggleDebugLog()
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "ladybug")
@@ -288,7 +387,11 @@ struct AgentSettingsView: View {
             .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.white.opacity(0.03))
+                    .fill(isFocused ? Color.white.opacity(0.12) : Color.white.opacity(0.03))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isFocused ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)

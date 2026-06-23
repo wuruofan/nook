@@ -118,6 +118,7 @@ struct SettingsSubPickerRow: View {
     let isSelected: Bool
     var primaryTextColor: Color = .white
     var secondaryTextColor: Color = .white.opacity(0.4)
+    var isFocused: Bool = false
     let action: () -> Void
 
     @State private var isHovered = false
@@ -151,7 +152,11 @@ struct SettingsSubPickerRow: View {
             .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(isHovered ? Color.white.opacity(0.06) : Color.clear)
+                    .fill(isFocused ? Color.white.opacity(0.10) : (isHovered ? Color.white.opacity(0.06) : Color.clear))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isFocused ? Color.white.opacity(0.22) : Color.clear, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)

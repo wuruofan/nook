@@ -617,8 +617,24 @@ class NotchViewModel: ObservableObject {
     let menuItemCount: Int = 13
     /// Total focusable items in the shortcuts page (Back + action rows + Restore)
     var shortcutsItemCount: Int { 1 + ShortcutAction.allCases.count + 1 }
-    /// Total focusable items in the agents page (just Back for now)
-    let agentsItemCount: Int = 1
+    /// Whether the Claude dir picker inside the Agents page is expanded.
+    /// Drives keyboard nav index range (2 picker options are inserted when
+    /// expanded, shifting hooks-toggle indices).
+    @Published var agentsClaudeDirPickerExpanded: Bool = false
+    /// Total focusable items on the Agents page.
+    ///
+    /// Layout: Back (0), Claude main (1), [Claude picker × 2 if expanded],
+    /// [Claude hooks if installed], Codex main, [Codex hooks if installed],
+    /// OpenCode main, [OpenCode hooks if installed], Debug log.
+    /// Order follows the visual order of the page.
+    var agentsItemCount: Int {
+        var count = 1 + 1 + 1 + 1 + 1 // Back + Claude/Codex/OpenCode main + Debug log
+        if agentsClaudeDirPickerExpanded { count += 2 }
+        if AgentPathsResolver.isInstalled(.claude)  { count += 1 }
+        if AgentPathsResolver.isInstalled(.codex)   { count += 1 }
+        if AgentPathsResolver.isInstalled(.opencode) { count += 1 }
+        return count
+    }
     /// Whether the "Visible Metrics" section is expanded in performance settings.
     @Published var performanceSettingsMetricsExpanded: Bool = false
     /// Total focusable items in the performance settings page.
