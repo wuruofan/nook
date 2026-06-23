@@ -74,10 +74,6 @@ enum ShortcutAction: String, CaseIterable, Codable {
     case enterSession
     case navigateBack
     case openSettings
-    /// Kept in the enum so `NotchViewModel.handleShortcutAction` can
-    /// dispatch a "scroll to bottom" notification to the chat view.
-    /// Hidden from the Settings UI (see `ShortcutSettingsView.visibleActions`).
-    case scrollToBottom
 
     var displayName: String {
         switch self {
@@ -88,7 +84,6 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .enterSession:    return "Open"
         case .navigateBack:    return "Go Back"
         case .openSettings:    return "Open Settings"
-        case .scrollToBottom:  return "Scroll to Bottom"
         }
     }
 
@@ -101,7 +96,6 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .enterSession:    return "arrow.forward"
         case .navigateBack:    return "arrow.uturn.left"
         case .openSettings:    return "gearshape"
-        case .scrollToBottom:  return "arrow.down.to.line"
         }
     }
 
@@ -129,8 +123,6 @@ enum ShortcutAction: String, CaseIterable, Codable {
             return [KeyCombination(keyCode: 4, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.control.rawValue))] // ⌃H (keyCode 4 = H)
         case .openSettings:
             return [KeyCombination(keyCode: 43, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.command.rawValue))] // ⌘, (keyCode 43 = ,)
-        case .scrollToBottom:
-            return [KeyCombination(keyCode: 5, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.control.rawValue))] // ⌃G (keyCode 5 = G)
         }
     }
 }

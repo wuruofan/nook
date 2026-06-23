@@ -18,12 +18,9 @@ struct ShortcutSettingsView: View {
     @State private var showResetConfirm = false
     @State private var conflictFlash: ShortcutAction?
 
-    /// Actions the user can rebind in Settings. Excludes `.scrollToBottom`
-    /// — it's still in `ShortcutAction` (so `NotchViewModel.handleShortcutAction`
-    /// can dispatch it) but the user has no use for it as a customizable
-    /// shortcut here, so we hide the row.
+    /// Actions the user can rebind in Settings.
     private var visibleActions: [ShortcutAction] {
-        ShortcutAction.allCases.filter { $0 != .scrollToBottom }
+        ShortcutAction.allCases
     }
     @State private var isResetHovered = false
     @State private var didAppear = false

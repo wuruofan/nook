@@ -122,23 +122,22 @@ class ShortcutManager {
                 return nil
             }
 
-            // Chat-specific hardcoded scroll keys. These are independent of
-            // the settings-page shortcuts — chat scroll keys are fixed (↑/↓/
-            // ⌃F/⌃B/⌃G) and not user-rebindable. We handle them here, before
-            // the configurable action loop, so ⌃N/P (which are bound to
-            // "previous/next session" in settings) don't scroll chat.
-            if case .chat = contentTypeProvider?(),
-               let direction = Self.chatScrollDirection(for: combo) {
-                NotificationCenter.default.post(name: .chatScrollAction, object: direction)
-                return nil
-            }
-
-            // On chat pages, plain j/k are ignored (not navigation, not scroll).
-            // But they still pass through when in an editable text field so the
-            // user can type j/k characters.
+            // Chat-only key handling. Hardcoded and not user-rebindable:
+            //   - ↑/↓/⌃F/⌃B/⌃G trigger chat scroll (see `chatScrollDirection`)
+            //   - plain j/k are ignored (don't navigate, don't scroll) so they
+            //     don't interfere with chat viewing, except when an editable
+            //     text field is focused — then they pass through for typing.
+            // We handle these before the configurable action loop so ⌃N/P
+            // (which are bound to "previous/next session" in settings) don't
+            // scroll chat, and j/k (which are bound to navigate up/down in
+            // settings) don't navigate from chat pages.
             if case .chat = contentTypeProvider?() {
+                if let direction = Self.chatScrollDirection(for: combo) {
+                    NotificationCenter.default.post(name: .chatScrollAction, object: direction)
+                    return nil
+                }
                 let hasNoModifiers = (combo.flags.rawValue & KeyCombination.relevantModifierMask) == 0
-                if hasNoModifiers && (combo.keyCode == 38 || combo.keyCode == 40) { // J or K
+                if hasNoModifiers, combo.keyCode == 38 || combo.keyCode == 40 { // J or K
                     if let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
                        textView.isEditable {
                         return event // pass through for typing
@@ -197,10 +196,10 @@ class ShortcutManager {
     /// Map a key combo to a chat scroll direction. Returns nil if the combo
     /// is not a chat scroll key. Called only when contentType == .chat.
     ///
-    /// - ↑ / ↓ : line scroll (same as before, kept for continuity)
+    /// - ↑ / ↓ : line scroll
     /// - ⌃F    : vim-style page down (forward)
     /// - ⌃B    : vim-style page up   (backward)
-    /// - ⌃G    : scroll to bottom (also reachable via `scrollToBottom` action)
+    /// - ⌃G    : scroll to bottom
     private static func chatScrollDirection(for combo: KeyCombination) -> ChatScrollDirection? {
         let mods = combo.flags.rawValue
         let hasCtrl = mods & NSEvent.ModifierFlags.control.rawValue != 0

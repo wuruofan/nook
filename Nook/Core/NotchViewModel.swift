@@ -657,10 +657,6 @@ class NotchViewModel: ObservableObject {
             if contentType != .menu {
                 toggleMenu()
             }
-        case .scrollToBottom:
-            if case .chat = contentType {
-                NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.bottom)
-            }
         }
     }
 
