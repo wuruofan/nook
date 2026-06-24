@@ -21,12 +21,13 @@ struct AgentIcon: View {
         case .codex:
             CodexLogoIcon(size: size, color: color, isAnimating: animate)
         case .opencode:
-            Image(systemName: provider.systemImage)
-                .font(.system(size: size * 0.79, weight: .semibold))
-                .foregroundColor(color)
-                .frame(width: size, height: size)
+            // Use the brand ring (not the generic `terminal` SF
+            // Symbol) so all four providers are visually
+            // distinguishable in the activity row. The ring
+            // opacity-pulses when `animate` is true.
+            OpenCodeLogoIcon(size: size, color: color, isAnimating: animate)
         case .cursor:
-            CursorLogoIcon(size: size, color: color)
+            CursorLogoIcon(size: size, color: color, isAnimating: animate)
         }
     }
 }
@@ -34,10 +35,14 @@ struct AgentIcon: View {
 struct CursorLogoIcon: View {
     let size: CGFloat
     let color: Color
+    var isAnimating: Bool = false
 
-    init(size: CGFloat = 16, color: Color = Color(red: 0.70, green: 0.70, blue: 0.68)) {
+    @State private var pulse: Bool = false
+
+    init(size: CGFloat = 16, color: Color = Color(red: 0.70, green: 0.70, blue: 0.68), isAnimating: Bool = false) {
         self.size = size
         self.color = color
+        self.isAnimating = isAnimating
     }
 
     var body: some View {
@@ -82,9 +87,12 @@ struct CursorLogoIcon: View {
                 polygon([center, lowerRight, bottom]),
                 with: .color(color.opacity(0.42))
             )
+            // Brightest "top" face — this is the highlight the user
+            // notices. Pulse its opacity to signal "processing".
+            let topHighlight = isAnimating ? (pulse ? 0.95 : 0.45) : 0.92
             context.fill(
                 polygon([upperLeft, upperRight, center]),
-                with: .color(Color.white.opacity(0.92))
+                with: .color(Color.white.opacity(topHighlight))
             )
             context.fill(
                 polygon([upperRight, point(63, 91), center]),
@@ -92,6 +100,21 @@ struct CursorLogoIcon: View {
             )
         }
         .frame(width: size, height: size)
+        .onAppear {
+            guard isAnimating else { return }
+            withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        }
+        .onChange(of: isAnimating) { _, newValue in
+            if newValue {
+                withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
+            } else {
+                pulse = false
+            }
+        }
     }
 }
 
@@ -112,6 +135,12 @@ struct ClaudeCrabIcon: View {
 
     var body: some View {
         Canvas { context, canvasSize in
+            // Crab is naturally 66×52 (landscape) — keep that aspect
+            // ratio so the crab fills its frame. The wider frame makes
+            // it peek more from behind other icons in the carousel; the
+            // carousel offset is tuned so this looks intentional rather
+            // than broken (the front icon's right edge defines the
+            // visible peek).
             let scale = size / 52.0
             let xOffset = (canvasSize.width - 66 * scale) / 2
 
@@ -261,13 +290,39 @@ struct CodexLogoIcon: View {
 /// project's official SVG asset; the 24×24 viewBox is preserved but
 /// the icon is fit-to-box scaled so it sits in a `size` × `size`
 /// frame without overflowing.
+///
+/// Pass `isAnimating: true` to drive the "squat" animation — the
+/// ring squashes vertically and bulges horizontally, then springs
+/// back, like a ball being pressed down. Volume is roughly preserved
+/// (height × 0.7, width × 1.35). The horizontal/vertical
+/// cross-sections of the ring also change shape: vertical thickness
+/// shrinks to ~1.0pt at peak compression while horizontal
+/// thickness grows to ~3.6pt, giving the squish a "leaning" feel.
+///
+/// Implementation: SwiftUI's `scaleEffect(x:y:anchor:)` modifier
+/// rather than transforming inside the Canvas. The modifier-driven
+/// approach is more reliable than `GraphicsContext.scaleBy` for
+/// driving redraws on `@State` change, and the resulting animation
+/// is observable in the SwiftUI view tree (transitions, hit-testing,
+/// etc. all stay correct).
 struct OpenCodeLogoIcon: View {
     let size: CGFloat
     let color: Color
+    var isAnimating: Bool = false
 
-    init(size: CGFloat = 16, color: Color = .white) {
+    @State private var squishPhase: CGFloat = 0
+
+    init(size: CGFloat = 16, color: Color = .white, isAnimating: Bool = false) {
         self.size = size
         self.color = color
+        self.isAnimating = isAnimating
+    }
+
+    /// Scale at peak (phase=1). 0.12 = 12% shrink.
+    private let scalePeak: CGFloat = 0.12
+
+    private var animScale: CGFloat {
+        isAnimating ? (1.0 - scalePeak * squishPhase) : 1.0
     }
 
     var body: some View {
@@ -300,8 +355,30 @@ struct OpenCodeLogoIcon: View {
             var path = Path()
             path.addRect(outer)
             path.addRect(inner)
-            context.fill(path, with: .color(color), style: FillStyle(eoFill: true))
+            context.fill(
+                path,
+                with: .color(color),
+                style: FillStyle(eoFill: true)
+            )
         }
         .frame(width: size, height: size)
+        .scaleEffect(animScale, anchor: .center)
+        .onAppear {
+            guard isAnimating else { return }
+            withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
+                squishPhase = 1
+            }
+        }
+        .onChange(of: isAnimating) { _, newValue in
+            if newValue {
+                withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
+                    squishPhase = 1
+                }
+            } else {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    squishPhase = 0
+                }
+            }
+        }
     }
 }

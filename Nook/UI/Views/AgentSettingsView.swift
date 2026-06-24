@@ -260,44 +260,46 @@ struct AgentSettingsView: View {
         }
     }
 
-    /// Brand icon for a provider, or `nil` to fall back to the SF Symbol
-    /// supplied via `icon:` in MenuRow / ExpandableSettingsRow.
+    /// Brand icon for a provider, returned as `some View` so the
+    /// concrete type is preserved (no `AnyView` heap allocation).
+    /// Generic `MenuRow<Icon>` infers `Icon` from the opaque return
+    /// at the call site.
     /// - Claude: `ClaudeCrabIcon` (the app's crab mascot)
     /// - Codex: Codex logo
     /// - Cursor: Cursor logo
     /// - OpenCode: `OpenCodeLogoIcon` (square ring, official brand mark)
     ///
     /// Each icon is wrapped in a 16×16 frame so the icon column is
-    /// uniform across all four providers. ClaudeCrabIcon's natural
-    /// aspect is 66/52 (wider than tall) so we pass `size: 12.6` to
-    /// make its natural width 16 and keep height at 12.6 — preserving
-    /// the full crab shape. Codex and Cursor canvases are square, so
-    /// we pass `size: 16` to fill the slot edge-to-edge.
-    private func brandIcon(for provider: SessionProvider) -> AnyView? {
+    /// uniform across all four providers. Sizing rationale:
+    /// - Claude size 12.6 → natural 16×12.6, crab is wider than tall
+    /// - Codex / Cursor size 16 → fill the 16×16 slot edge-to-edge
+    /// - **OpenCode size 13** → drawn at ~10.4×13 in a 13×13 canvas,
+    ///   then padded to 16×16. The OpenCode ring outline is solid
+    ///   white at full opacity (highest contrast on the dark menu),
+    ///   so drawing it at full 16 height would make it look
+    ///   noticeably bigger than the Codex/Cursor gradient fills.
+    ///   Scaling to 13 evens out the visual mass.
+    @ViewBuilder
+    private func brandIcon(for provider: SessionProvider) -> some View {
         switch provider {
         case .claude:
             // size: 12.6 → natural 16 wide × 12.6 tall; frame centers it.
             // Crab is wider than tall; squeezing it into 16×16 would
             // crop the leg tips and antennae.
-            return AnyView(
-                ClaudeCrabIcon(size: 12.6)
-                    .frame(width: 16, height: 16)
-            )
+            ClaudeCrabIcon(size: 12.6)
+                .frame(width: 16, height: 16)
         case .codex:
-            return AnyView(
-                CodexLogoIcon(size: 16, color: SessionLoadingStyle.tint(for: .codex))
-                    .frame(width: 16, height: 16)
-            )
+            CodexLogoIcon(size: 16, color: SessionLoadingStyle.tint(for: .codex))
+                .frame(width: 16, height: 16)
         case .cursor:
-            return AnyView(
-                CursorLogoIcon(size: 16, color: primaryTextColor.opacity(0.82))
-                    .frame(width: 16, height: 16)
-            )
+            CursorLogoIcon(size: 16, color: primaryTextColor.opacity(0.82))
+                .frame(width: 16, height: 16)
         case .opencode:
-            return AnyView(
-                OpenCodeLogoIcon(size: 16, color: primaryTextColor)
-                    .frame(width: 16, height: 16)
-            )
+            // See sizing rationale above. 13/16 ≈ 0.81 scale gives a
+            // visual mass close to Codex/Cursor while keeping the ring
+            // shape recognizable.
+            OpenCodeLogoIcon(size: 13, color: primaryTextColor)
+                .frame(width: 16, height: 16)
         }
     }
 
