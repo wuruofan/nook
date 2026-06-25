@@ -274,7 +274,7 @@ git commit -m "feat(agents): square ClaudeCrabIcon frame for consistent carousel
 
 **Files:**
 - Modify: `Nook/UI/Views/NotchView.swift:595` (`AgentIcon(size: 14, ...)`)
-- Modify: `Nook/UI/Views/NotchView.swift:602` (`offset(x: CGFloat(index) * 11)`)
+- Modify: `Nook/UI/Views/NotchView.swift:602` (`offset(x: CGFloat(index) * 11)` — multiplier kept at 11; the bumped slot from 16→18 yields a tighter ~8.3pt visible peek)
 - Modify: `Nook/UI/Views/NotchView.swift:650` (`PermissionIndicatorIcon(size: 14, ...)`)
 - Modify: `Nook/UI/Views/NotchView.swift:583-588` (doc comment numeric updates)
 
@@ -289,8 +289,8 @@ constant.
 - `iconSize`: 14 → **16**
 - `iconPadding`: 1 (unchanged)
 - `slot`: 16 → **18** (size + 2 × padding)
-- `peekOffset`: 11 → **13** (offset/slot ratio stays ~0.72)
-- visible peek: 8.6pt → **10.3pt** (= 18 × 0.85 − (18 − 13))
+- `peekOffset`: 11 → **11** (kept at 11; with the bumped slot this gives a tighter ~8.3pt visible peek)
+- visible peek: 8.6pt → **8.3pt** (= 18 × 0.85 − (18 − 11))
 - `peekScale`: 0.85 (unchanged)
 - `peekOpacity`: 0.55 (unchanged)
 
@@ -313,10 +313,10 @@ AgentIcon(
 
 ### Step 2: Update peek offset
 
-In `Nook/UI/Views/NotchView.swift:602`, change `* 11` to `* 13`:
+In `Nook/UI/Views/NotchView.swift:602`, the offset multiplier stays at `* 11` (it doesn't change in this task); the bumped `slot` (16 → 18) is what tightens the visible peek from ~8.6pt to ~8.3pt:
 
 ```swift
-.offset(x: CGFloat(index) * 13)            // was * 11
+.offset(x: CGFloat(index) * 11)            // multiplier unchanged; slot bumped 16 → 18
 ```
 
 ### Step 3: Update permission indicator size
@@ -338,7 +338,7 @@ the comment to match the new layout:
 // multiple agents are processing simultaneously,
 // the `displayOrder` starts at `carouselFront`
 // and rotates every 2s. The leftmost icon (front)
-// is fully visible; the others peek out ~10.3pt to
+// is fully visible; the others peek out ~8.3pt to
 // the right, sorted by priority from the front.
 // Each icon's own pulse/movement animation is
 // independent (Claude legs, Codex glow,
@@ -346,7 +346,7 @@ the comment to match the new layout:
 // the stack reads as alive on its own.
 ```
 
-(Change "8pt" → "~10.3pt" if present. Some of the other text remains the same.)
+(Change any "10.3pt" → "~8.3pt" if present. Some of the other text remains the same.)
 
 ### Step 5: Build + commit
 
@@ -400,7 +400,7 @@ Verification step only. If anything looks wrong, revert with `git revert HEAD~1.
 
 ## Self-Review Notes
 
-- **Spec coverage:** spec's "Display rules" table → Task 1 (cap at 2). spec's "Crab frame squaring" → Task 2 (square frame + center content). spec's "Per-icon visual hierarchy" → unchanged in code, both tasks preserve `scale 0.85`, `opacity 0.55`, `offset 11`, `zIndex count - index`. spec's "Edge Cases" → handled by the existing stale-front reset in `NotchView` and the `active.count > 1` rotation guard, neither modified.
+- **Spec coverage:** spec's "Display rules" table → Task 1 (cap at 2). spec's "Crab frame squaring" → Task 2 (square frame + center content). spec's "Per-icon visual hierarchy" → unchanged in code, all tasks preserve `scale 0.85`, `opacity 0.55`, `offset 11`, `zIndex count - index`. spec's "Edge Cases" → handled by the existing stale-front reset in `NotchView` and the `active.count > 1` rotation guard, neither modified.
 - **No placeholders:** all code is shown in full. Build and test commands are explicit.
 - **Type consistency:** `displayOrder` return type stays `[SessionProvider]`; `ClaudeCrabIcon.body` return type stays `some View`; all transform math uses the same `CGFloat` operations.
 - **No scope creep:** no new files, no refactor of `displayOrder` into a free function (would require exposing `carouselFront`/`activeProcessingProviders`), no SwiftUI Preview tests added (project has no such infrastructure).

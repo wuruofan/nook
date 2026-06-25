@@ -64,7 +64,7 @@ that as the new front (existing stale-front logic is preserved).
 | `iconSize` | **16** | bumped from 14 to match the Agents settings page (16pt). Crabs in the settings use 12.6 content in 16×16; bumping notch to 16 keeps the proportions consistent across contexts. |
 | `iconPadding` | 1 | unchanged |
 | `slot` | 18 (= size + 2 × padding) | derived from `iconSize` |
-| `peekOffset` | **13** | bumped from 11 to keep the relative offset-to-slot ratio (~0.72). Gives ≈ 10.3pt visible peek. |
+| `peekOffset` | **11** | keeps the original offset; with the bumped slot (18) this gives ≈ 8.3pt visible peek (peekOffset − slot × (1 − peekScale) = 11 − 18 × 0.15). |
 | `peekScale` | 0.85 | unchanged |
 | `peekOpacity` | 0.55 | unchanged |
 | `rotationInterval` | 2.0s | unchanged |
@@ -104,13 +104,13 @@ because the notch header is a solid color in closed state.
 | 1 | peek | 0.85 | 0.55 | count - 1 | 11 |
 
 Front draws on top of peek. The peek's reduced scale and opacity make the
-hierarchy readable while still showing a clear, consistent ~8.6pt sliver.
+hierarchy readable while still showing a clear, consistent ~8.3pt sliver.
 
 ## Files Changed
 
 | File | Change |
 |---|---|
-| `Nook/UI/Views/NotchView.swift` | (1) `displayOrder` returns exactly `[front, next(front)]` (cap at 2) instead of the full rotated list. (2) `offset(x:)` is the existing `CGFloat(index) * 11`. (3) Optional: extract `iconSize`, `peekOffset`, `peekScale`, `peekOpacity`, `rotationInterval` as named constants. |
+| `Nook/UI/Views/NotchView.swift` | (1) `displayOrder` returns exactly `[front, next(front)]` (cap at 2) instead of the full rotated list. (2) `offset(x:)` is `CGFloat(index) * 11` (gives ~8.3pt visible peek with slot 18, scale 0.85). (3) Optional: extract `iconSize`, `peekOffset`, `peekScale`, `peekOpacity`, `rotationInterval` as named constants. |
 | `Nook/UI/Components/AgentProviderIcons.swift` | (1) `ClaudeCrabIcon` body: square frame `size × size`, scale `size/66`, vertical centering via `yOffset`, `translatedBy(x: xOffset/scale, y: yOffset/scale)` for every crab part. |
 
 ## Edge Cases & Behavior

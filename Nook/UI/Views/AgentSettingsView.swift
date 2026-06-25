@@ -353,8 +353,12 @@ struct AgentSettingsView: View {
             case .cursor:   return cursorHooksIndex
             }
         }()
+        // OpenCode uses a plugin mechanism (installed via `opencode plugin --global`),
+        // not a hooks one. The other three providers use real hooks. Show the
+        // mechanism that matches the implementation.
+        let label: String = (provider == .opencode) ? "Plugin" : "Hooks"
         return SettingsSubToggleRow(
-            label: "Hooks",
+            label: label,
             isOn: hooksOn,
             primaryTextColor: primaryTextColor,
             secondaryTextColor: secondaryTextColor,
@@ -510,12 +514,20 @@ struct AgentSettingsView: View {
         AgentPathsResolver.isInstalled(provider)
     }
 
+    /// The "is the toggle on" answer for the UI. We OR the local
+    /// `@State` (driven by the install check) with `AppSettings.*HooksEnabled`
+    /// (the persisted user intent). The fallback to AppSettings matters because
+    /// `refreshStates()` overwrites the local @State from `isInstalled()`,
+    /// which can return false even when the install is actually present
+    /// (e.g. transient file-check races, JSONC comment edge cases in the
+    /// opencode config, plugin path string mismatches). AppSettings is the
+    /// durable "user wants this on" signal and should win.
     private func hooksInstalled(_ provider: SessionProvider) -> Bool {
         switch provider {
-        case .claude: return claudeHooksInstalled
-        case .codex: return codexHooksInstalled
-        case .opencode: return opencodeHooksInstalled
-        case .cursor: return cursorHooksInstalled
+        case .claude:   return claudeHooksInstalled   || AppSettings.claudeHooksEnabled
+        case .codex:    return codexHooksInstalled    || AppSettings.codexHooksEnabled
+        case .opencode: return opencodeHooksInstalled || AppSettings.opencodeHooksEnabled
+        case .cursor:   return cursorHooksInstalled   || AppSettings.cursorHooksEnabled
         }
     }
 
