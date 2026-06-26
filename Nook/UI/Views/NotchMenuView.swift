@@ -590,14 +590,19 @@ struct AccessibilityRow: View {
     }
 }
 
-struct MenuRow: View {
+struct MenuRow<Icon: View>: View {
     let icon: String
-    /// Optional override for the leading icon. When provided, replaces the
-    /// SF Symbol `icon`. Use this when a row needs a brand logo (e.g. Codex /
-    /// Cursor) instead of an SF Symbol. Wrapped in `AnyView` so MenuRow
-    /// stays non-generic — callers pay the erasure cost (one static view)
-    /// rather than infecting every call site with a generic parameter.
-    var customIcon: AnyView? = nil
+    /// Optional override for the leading icon. When provided, replaces
+    /// the SF Symbol `icon`. Use this when a row needs a brand logo
+    /// (e.g. Codex / Cursor / OpenCode marks) instead of an SF Symbol.
+    ///
+    /// `MenuRow` is generic over `Icon` so the brand logo's concrete
+    /// type is preserved end-to-end — no `AnyView` heap allocation, no
+    /// SwiftUI view-diffing penalty. The most common call sites don't
+    /// pass `customIcon` and use the convenience init in the
+    /// `Icon == EmptyView` extension below; they pay nothing for the
+    /// extra type parameter.
+    var customIcon: Icon? = nil
     let label: String
     var trailingLabel: String? = nil
     /// Design for the trailing label. Defaults to `.default`; pass
@@ -615,6 +620,32 @@ struct MenuRow: View {
     let action: () -> Void
 
     @State private var isHovered = false
+
+    init(
+        icon: String,
+        customIcon: Icon? = nil,
+        label: String,
+        trailingLabel: String? = nil,
+        trailingLabelDesign: Font.Design = .default,
+        trailingLabelDimmed: Bool = false,
+        trailingIcon: String? = nil,
+        isDestructive: Bool = false,
+        primaryTextColor: Color = .white,
+        isFocused: Bool = false,
+        action: @escaping () -> Void
+    ) {
+        self.icon = icon
+        self.customIcon = customIcon
+        self.label = label
+        self.trailingLabel = trailingLabel
+        self.trailingLabelDesign = trailingLabelDesign
+        self.trailingLabelDimmed = trailingLabelDimmed
+        self.trailingIcon = trailingIcon
+        self.isDestructive = isDestructive
+        self.primaryTextColor = primaryTextColor
+        self.isFocused = isFocused
+        self.action = action
+    }
 
     var body: some View {
         Button(action: action) {
@@ -674,6 +705,40 @@ struct MenuRow: View {
             return Color(red: 1.0, green: 0.4, blue: 0.4)
         }
         return primaryTextColor.opacity(isHovered ? 1.0 : 0.82)
+    }
+}
+
+/// Convenience init for the common case (no `customIcon`). Pins
+/// `Icon` to `EmptyView` so existing call sites don't need to
+/// specify the generic parameter — they keep their old argument
+/// shape and just get a slightly more efficient `MenuRow` under
+/// the hood.
+extension MenuRow where Icon == EmptyView {
+    init(
+        icon: String,
+        label: String,
+        trailingLabel: String? = nil,
+        trailingLabelDesign: Font.Design = .default,
+        trailingLabelDimmed: Bool = false,
+        trailingIcon: String? = nil,
+        isDestructive: Bool = false,
+        primaryTextColor: Color = .white,
+        isFocused: Bool = false,
+        action: @escaping () -> Void
+    ) {
+        self.init(
+            icon: icon,
+            customIcon: nil,
+            label: label,
+            trailingLabel: trailingLabel,
+            trailingLabelDesign: trailingLabelDesign,
+            trailingLabelDimmed: trailingLabelDimmed,
+            trailingIcon: trailingIcon,
+            isDestructive: isDestructive,
+            primaryTextColor: primaryTextColor,
+            isFocused: isFocused,
+            action: action
+        )
     }
 }
 

@@ -1043,7 +1043,19 @@ actor SessionStore {
             )
 
         case .assistantText(let text):
-            session.phase = hasRunningTools(in: session) ? .processing : .idle
+            // OpenCode sessions should stay .processing between ops — the
+            // only valid transition to .idle is via the explicit `.stop`
+            // event (from opencode's `session.idle` bus event). Setting
+            // phase=.idle here when no tools are running causes the notch
+            // icon animation to flash off between tool/think boundaries
+            // (because opencode fires session.status=busy 1-3ms after the
+            // tool-end idle gap). For all other providers, the existing
+            // hasRunningTools heuristic is fine.
+            if session.provider == .opencode {
+                session.phase = .processing
+            } else {
+                session.phase = hasRunningTools(in: session) ? .processing : .idle
+            }
             session.completionNotificationAt = now
             session.conversationInfo = ConversationInfo(
                 summary: session.conversationInfo.summary,
@@ -1069,7 +1081,14 @@ actor SessionStore {
                 session.phase = .processing
             } else {
                 session.toolTracker.completeTool(id: update.id, success: !update.isError)
-                session.phase = hasRunningTools(in: session) ? .processing : .idle
+                // Same opencode carve-out as assistantText above: between
+                // tool calls the session is still alive, so keep .processing
+                // until the explicit .stop event.
+                if session.provider == .opencode {
+                    session.phase = .processing
+                } else {
+                    session.phase = hasRunningTools(in: session) ? .processing : .idle
+                }
             }
             session.conversationInfo = ConversationInfo(
                 summary: session.conversationInfo.summary,
@@ -1892,6 +1911,13 @@ actor SessionStore {
 
     private func processInterrupt(sessionId: String) async {
         guard var session = sessions[sessionId] else { return }
+
+        // Idempotent guard: if the session already settled to .idle
+        // (e.g. Stop hook event was processed first, then the
+        // status-file watcher also fired on busy→idle transition),
+        // don't re-run the cleanup. Without this, both paths would
+        // each clear subagentState and re-publishState().
+        guard session.phase != .idle else { return }
 
         // Clear subagent state
         session.subagentState = SubagentState()

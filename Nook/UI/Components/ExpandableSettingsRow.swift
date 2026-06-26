@@ -9,12 +9,13 @@
 
 import SwiftUI
 
-struct ExpandableSettingsRow<Content: View>: View {
+struct ExpandableSettingsRow<Content: View, Icon: View>: View {
     let icon: String
     /// Optional override for the leading icon (brand logo etc.). When
-    /// provided, replaces the SF Symbol `icon`. Same API shape as
-    /// `MenuRow.customIcon`.
-    var customIcon: AnyView? = nil
+    /// provided, replaces the SF Symbol `icon`. Generic over `Icon` so
+    /// the brand logo's concrete type is preserved — no `AnyView`
+    /// allocation. See `MenuRow<Icon>` for the same trade-off.
+    var customIcon: Icon? = nil
     let label: String
     var trailingText: String? = nil
     var primaryTextColor: Color = .white
@@ -28,7 +29,7 @@ struct ExpandableSettingsRow<Content: View>: View {
 
     init(
         icon: String,
-        customIcon: AnyView? = nil,
+        customIcon: Icon? = nil,
         label: String,
         trailingText: String? = nil,
         primaryTextColor: Color = .white,
@@ -119,6 +120,34 @@ struct ExpandableSettingsRow<Content: View>: View {
                 .padding(.top, 4)
             }
         }
+    }
+}
+
+/// Convenience init for the common case (no `customIcon`). Pins
+/// `Icon` to `EmptyView` so existing call sites don't need to
+/// specify the generic parameter.
+extension ExpandableSettingsRow where Icon == EmptyView {
+    init(
+        icon: String,
+        label: String,
+        trailingText: String? = nil,
+        primaryTextColor: Color = .white,
+        secondaryTextColor: Color = .white.opacity(0.4),
+        isFocused: Bool = false,
+        isExpanded: Binding<Bool>,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.init(
+            icon: icon,
+            customIcon: nil,
+            label: label,
+            trailingText: trailingText,
+            primaryTextColor: primaryTextColor,
+            secondaryTextColor: secondaryTextColor,
+            isFocused: isFocused,
+            isExpanded: isExpanded,
+            content: content
+        )
     }
 }
 

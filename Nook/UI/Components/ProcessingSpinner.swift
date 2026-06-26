@@ -30,7 +30,6 @@ struct ProcessingSpinner: View {
     let color: Color
     let provider: SessionProvider?
     @State private var phase: Int = 0
-    @State private var rotation: Double = 0
 
     private let timer = Timer.publish(
         every: SessionLoadingStyle.frameDuration,
@@ -50,32 +49,13 @@ struct ProcessingSpinner: View {
 
     @ViewBuilder
     var body: some View {
-        if provider == .codex {
-            ZStack {
-                Circle()
-                    .stroke(color.opacity(0.18), lineWidth: 1.6)
-
-                Circle()
-                    .trim(from: 0.12, to: 0.72)
-                    .stroke(color, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
-                    .rotationEffect(.degrees(rotation))
+        Text(SessionLoadingStyle.symbols[phase % SessionLoadingStyle.symbols.count])
+            .font(.system(size: 16, weight: .bold))
+            .foregroundColor(color)
+            .frame(width: 16, alignment: .center)
+            .onReceive(timer) { _ in
+                phase = (phase + 1) % SessionLoadingStyle.symbols.count
             }
-            .frame(width: 16, height: 16)
-            .onAppear {
-                rotation = 0
-                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
-                    rotation = 360
-                }
-            }
-        } else {
-            Text(SessionLoadingStyle.symbols[phase % SessionLoadingStyle.symbols.count])
-                .font(.system(size: 16, weight: .bold))
-                .foregroundColor(color)
-                .frame(width: 16, alignment: .center)
-                .onReceive(timer) { _ in
-                    phase = (phase + 1) % SessionLoadingStyle.symbols.count
-                }
-        }
     }
 }
 
