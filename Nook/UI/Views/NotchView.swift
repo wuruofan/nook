@@ -50,7 +50,7 @@ struct NotchView: View {
     // deepseek-v4-flash review caught this: body re-runs ~every state
     // change, each one starts a fresh publisher → no rotation.
     private let carouselTimer = Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()
-    @AppStorage(AppSettings.artworkAdaptiveBackgroundEnabledKey) private var artworkAdaptiveBackgroundEnabled = true
+    @AppStorage(AppSettings.notchAppearanceStyleKey) private var notchAppearanceStyleRaw = NotchAppearanceStyle.adaptiveArtwork.rawValue
     @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
     @AppStorage(AppSettings.vibeGlowEnabledKey) private var vibeGlowEnabled = false
     @AppStorage(AppSettings.performanceMonitorEnabledKey) private var performanceMonitorEnabled = true
@@ -234,35 +234,7 @@ struct NotchView: View {
                     )
                     .padding([.horizontal, .bottom], viewModel.status == .opened ? 12 : 0)
                     .background {
-                        if isAdaptiveBackgroundEnabled {
-                            NotchShape(
-                                topCornerRadius: viewModel.animatedTopCornerRadius,
-                                bottomCornerRadius: viewModel.animatedBottomCornerRadius
-                            )
-                            .fill(expandedNotchTheme.backgroundGradient)
-                            .overlay(
-                                RadialGradient(
-                                    colors: [
-                                        expandedNotchTheme.primaryText.opacity(0.08),
-                                        .clear
-                                    ],
-                                    center: .topLeading,
-                                    startRadius: 12,
-                                    endRadius: notchSize.width * 0.9
-                                )
-                            )
-                            .overlay(expandedNotchTheme.overlayColor)
-                            .clipShape(NotchShape(
-                                topCornerRadius: viewModel.animatedTopCornerRadius,
-                                bottomCornerRadius: viewModel.animatedBottomCornerRadius
-                            ))
-                        } else {
-                            NotchShape(
-                                topCornerRadius: viewModel.animatedTopCornerRadius,
-                                bottomCornerRadius: viewModel.animatedBottomCornerRadius
-                            )
-                            .fill(Color.black)
-                        }
+                        notchBackground
                     }
                     .clipShape(NotchShape(
                         topCornerRadius: viewModel.animatedTopCornerRadius,
@@ -270,8 +242,8 @@ struct NotchView: View {
                     ))
                     .overlay(edgeGlowOverlay)
                     .shadow(
-                        color: (viewModel.status == .opened || isHovering) ? .black.opacity(0.7) : .clear,
-                        radius: 6
+                        color: notchShadowColor,
+                        radius: notchShadowRadius
                     )
                     .frame(
                         maxWidth: viewModel.status == .opened ? notchSize.width : nil,
@@ -299,6 +271,7 @@ struct NotchView: View {
                     .animation(.smooth, value: hasWaitingForInput)
                     .animation(.smooth, value: showMusicActivity)
                     .animation(.smooth, value: vibeGlowEnabled)
+                    .animation(.smooth, value: notchAppearanceStyleRaw)
                     .animation(.smooth(duration: 0.45), value: musicManager.playbackState.artworkData)
                     .animation(.spring(response: 0.3, dampingFraction: 0.5), value: isBouncing)
                     .contentShape(Rectangle())
@@ -440,8 +413,16 @@ struct NotchView: View {
         musicManager.albumArt != nil && musicManager.hasArtworkGradient
     }
 
-    private var isAdaptiveBackgroundEnabled: Bool {
-        viewModel.status == .opened && musicManager.isVisible && artworkAdaptiveBackgroundEnabled && hasArtworkThemeSource
+    private var notchAppearanceStyle: NotchAppearanceStyle {
+        (NotchAppearanceStyle(rawValue: notchAppearanceStyleRaw) ?? .adaptiveArtwork)
+            .resolvedForCurrentSystem
+    }
+
+    private var isArtworkAdaptiveBackgroundVisible: Bool {
+        viewModel.status == .opened
+            && musicManager.isVisible
+            && notchAppearanceStyle == .adaptiveArtwork
+            && hasArtworkThemeSource
     }
 
     private var expandedNotchTheme: ExpandedNotchTheme {
@@ -463,19 +444,104 @@ struct NotchView: View {
     }
 
     private var expandedPrimaryTextColor: Color {
-        isAdaptiveBackgroundEnabled ? expandedNotchTheme.primaryText : .white
+        isArtworkAdaptiveBackgroundVisible ? expandedNotchTheme.primaryText : .white
     }
 
     private var expandedSecondaryTextColor: Color {
-        isAdaptiveBackgroundEnabled ? expandedNotchTheme.secondaryText : .white.opacity(0.4)
+        isArtworkAdaptiveBackgroundVisible ? expandedNotchTheme.secondaryText : .white.opacity(0.4)
     }
 
     private var expandedSeparatorColor: Color {
-        isAdaptiveBackgroundEnabled ? expandedNotchTheme.separator : .white.opacity(0.08)
+        isArtworkAdaptiveBackgroundVisible ? expandedNotchTheme.separator : .white.opacity(0.08)
     }
 
     private var expandedHeaderIconColor: Color {
-        isAdaptiveBackgroundEnabled ? expandedNotchTheme.headerIcon : .white.opacity(0.4)
+        isArtworkAdaptiveBackgroundVisible ? expandedNotchTheme.headerIcon : .white.opacity(0.4)
+    }
+
+    private var isExpandedLiquidGlassVisible: Bool {
+        viewModel.status == .opened && notchAppearanceStyle == .liquidGlass
+    }
+
+    private var notchShadowColor: Color {
+        if isExpandedLiquidGlassVisible {
+            return Color.black.opacity(0.24)
+        }
+
+        return (viewModel.status == .opened || isHovering) ? .black.opacity(0.7) : .clear
+    }
+
+    private var notchShadowRadius: CGFloat {
+        isExpandedLiquidGlassVisible ? 10 : 6
+    }
+
+    @ViewBuilder
+    private var notchBackground: some View {
+        let shape = NotchShape(
+            topCornerRadius: viewModel.animatedTopCornerRadius,
+            bottomCornerRadius: viewModel.animatedBottomCornerRadius
+        )
+
+        switch notchAppearanceStyle {
+        case .liquidGlass where viewModel.status == .opened:
+            liquidGlassBackground(in: shape)
+        case .liquidGlass:
+            pureBlackBackground(in: shape)
+        case .adaptiveArtwork:
+            if isArtworkAdaptiveBackgroundVisible {
+                adaptiveArtworkBackground(in: shape)
+            } else {
+                pureBlackBackground(in: shape)
+            }
+        case .pureBlack:
+            pureBlackBackground(in: shape)
+        }
+    }
+
+    @ViewBuilder
+    private func adaptiveArtworkBackground(in shape: NotchShape) -> some View {
+        shape
+            .fill(expandedNotchTheme.backgroundGradient)
+            .overlay(
+                RadialGradient(
+                    colors: [
+                        expandedNotchTheme.primaryText.opacity(0.08),
+                        .clear
+                    ],
+                    center: .topLeading,
+                    startRadius: 12,
+                    endRadius: notchSize.width * 0.9
+                )
+            )
+            .overlay(expandedNotchTheme.overlayColor)
+            .clipShape(shape)
+    }
+
+    @ViewBuilder
+    private func liquidGlassBackground(in shape: NotchShape) -> some View {
+        if #available(macOS 26.0, *) {
+            shape
+                .fill(Color.white.opacity(0.03))
+                .glassEffect(.regular, in: shape)
+                .overlay(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.14),
+                            Color.white.opacity(0.035)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .clipShape(shape)
+                )
+                .overlay(shape.stroke(Color.white.opacity(0.22), lineWidth: 1))
+        } else {
+            pureBlackBackground(in: shape)
+        }
+    }
+
+    private func pureBlackBackground(in shape: NotchShape) -> some View {
+        shape.fill(Color.black)
     }
 
     private var showHeaderAgentActivity: Bool {

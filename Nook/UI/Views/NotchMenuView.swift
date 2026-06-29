@@ -31,7 +31,8 @@ struct NotchMenuView: View {
     @ObservedObject private var soundSelector = SoundSelector.shared
     @State private var launchAtLogin: Bool = false
     @State private var didAppear = false
-    @AppStorage(AppSettings.artworkAdaptiveBackgroundEnabledKey) private var artworkAdaptiveBackgroundEnabled = true
+    @State private var isAppearancePickerExpanded = false
+    @AppStorage(AppSettings.notchAppearanceStyleKey) private var notchAppearanceStyleRaw = NotchAppearanceStyle.adaptiveArtwork.rawValue
     @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
     @AppStorage(AppSettings.vibeGlowEnabledKey) private var vibeGlowEnabled = false
 
@@ -103,15 +104,14 @@ struct NotchMenuView: View {
                     .padding(.vertical, 4)
 
                 // Music settings
-                MenuToggleRow(
-                    icon: "photo",
-                    label: "Artwork Adaptive Background",
-                    isOn: artworkAdaptiveBackgroundEnabled,
+                AppearanceStylePickerRow(
+                    selectedStyle: selectedAppearanceStyle,
                     primaryTextColor: primaryTextColor,
                     secondaryTextColor: secondaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 6
-                ) {
-                    artworkAdaptiveBackgroundEnabled.toggle()
+                    isFocused: viewModel.settingsFocusedIndex == 6,
+                    isExpanded: $isAppearancePickerExpanded
+                ) { style in
+                    setAppearanceStyle(style)
                 }
 
                 MenuToggleRow(
@@ -233,7 +233,7 @@ struct NotchMenuView: View {
         case 3: viewModel.pushTo(.agents)
         case 4: viewModel.pushTo(.performanceSettings)
         case 5: viewModel.pushTo(.shortcuts)
-        case 6: artworkAdaptiveBackgroundEnabled.toggle()
+        case 6: withAnimation(.easeInOut(duration: 0.2)) { isAppearancePickerExpanded.toggle() }
         case 7: musicEdgeGlowEnabled.toggle()
         case 8: vibeGlowEnabled.toggle()
         case 9:
@@ -264,11 +264,25 @@ struct NotchMenuView: View {
     private func refreshStates() {
         launchAtLogin = SMAppService.mainApp.status == .enabled
         screenSelector.refreshScreens()
+        notchAppearanceStyleRaw = AppSettings.notchAppearanceStyle.rawValue
     }
 
     private var appVersion: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
         return "v\(version)"
+    }
+
+    private var selectedAppearanceStyle: NotchAppearanceStyle {
+        (NotchAppearanceStyle(rawValue: notchAppearanceStyleRaw) ?? AppSettings.notchAppearanceStyle)
+            .resolvedForCurrentSystem
+    }
+
+    private func setAppearanceStyle(_ style: NotchAppearanceStyle) {
+        let resolvedStyle = style.resolvedForCurrentSystem
+        withAnimation(.easeInOut(duration: 0.2)) {
+            AppSettings.notchAppearanceStyle = resolvedStyle
+            notchAppearanceStyleRaw = resolvedStyle.rawValue
+        }
     }
 }
 
@@ -793,5 +807,52 @@ struct MenuToggleRow: View {
 
     private var textColor: Color {
         primaryTextColor.opacity(isHovered ? 1.0 : 0.82)
+    }
+}
+
+struct AppearanceStylePickerRow: View {
+    let selectedStyle: NotchAppearanceStyle
+    var primaryTextColor: Color = .white
+    var secondaryTextColor: Color = .white.opacity(0.4)
+    var isFocused: Bool = false
+    @Binding var isExpanded: Bool
+    let action: (NotchAppearanceStyle) -> Void
+
+    var body: some View {
+        ExpandableSettingsRow(
+            icon: "circle.lefthalf.filled",
+            label: "Appearance Style",
+            trailingText: selectedStyle.displayName,
+            primaryTextColor: primaryTextColor,
+            secondaryTextColor: secondaryTextColor,
+            isFocused: isFocused,
+            isExpanded: $isExpanded
+        ) {
+            VStack(spacing: 2) {
+                ForEach(NotchAppearanceStyle.availableCases) { style in
+                    SettingsSubPickerRow(
+                        label: style.displayName,
+                        sublabel: sublabel(for: style),
+                        verticalSublabel: true,
+                        isSelected: selectedStyle == style,
+                        primaryTextColor: primaryTextColor,
+                        secondaryTextColor: secondaryTextColor
+                    ) {
+                        action(style)
+                    }
+                }
+            }
+        }
+    }
+
+    private func sublabel(for style: NotchAppearanceStyle) -> String {
+        switch style {
+        case .liquidGlass:
+            return "macOS 26+ glass"
+        case .adaptiveArtwork:
+            return "Dynamic music colors"
+        case .pureBlack:
+            return "Solid black"
+        }
     }
 }
