@@ -1,11 +1,11 @@
 # Nook
 
 <p align="center">
-  <img src="./readme/ic_launcher.png" alt="Nook app icon" width="128" />
+  <img src="./readme/ic_launcher.png" alt="Nook app icon" width="112" />
 </p>
 
 <p align="center">
-  <strong>A live notch surface for AI coding sessions, music, and Mac status.</strong>
+  <strong>A live MacBook notch surface for agents, music, and system status.</strong>
 </p>
 
 <p align="center">
@@ -14,56 +14,50 @@
 </p>
 
 <p align="center">
-  <img src="./readme/img_nook_collapse.png" alt="Nook collapsed notch view" width="720" />
+  <img src="./readme/img_nook_home.png" alt="Nook home view with performance, music, and agent sessions" width="720" />
 </p>
 
 <p align="center">
-  <img src="./readme/img_nook_expand.png" alt="Nook expanded sessions and music view" width="720" />
+  <img src="./readme/img_nook_settings.png" alt="Nook settings view" width="720" />
 </p>
 
-Nook turns the MacBook notch into a compact, always-available workspace layer. It keeps AI agent activity, session details, music playback, and system health close to where you already glance while working.
+<p align="center">
+  <img src="./readme/img_nook_compact_music.png" alt="Nook compact music notch" width="225" />
+  <img src="./readme/img_nook_compact_music_artwork.png" alt="Nook compact music notch with artwork" width="225" />
+  <img src="./readme/img_nook_compact_music_glow.png" alt="Nook compact music notch with glow" width="225" />
+</p>
 
-## Highlights
+Nook turns the MacBook notch into a compact desktop control layer. The home view keeps high-signal context in one place: Mac performance, now playing controls, and live AI coding sessions.
 
-| Area | What Nook Adds |
+## What It Does
+
+| Area | Features |
 | --- | --- |
-| AI agents | Live monitoring for Claude Code, Codex, OpenCode, and Cursor sessions. |
-| Session detail | Prompt, thinking, tool calls, tool results, approvals, questions, and completion state in one notch panel. |
-| Music | Now playing card with artwork, source app icon, progress, seek, play/pause, previous/next, and open-source-app control. |
-| Performance | CPU, memory, battery, and network snapshots with configurable visible metrics and detail pages. |
-| Appearance | Music-driven dynamic color, macOS 26+ Glass, and pure Black styles selectable from Settings. |
-| Controls | Screen picker, notification sound picker, keyboard shortcuts, launch at login, accessibility entry, and per-agent hook toggles. |
+| Agent sessions | Monitor Claude Code, Codex, OpenCode, and Cursor from local hook events. |
+| Session detail | Show prompts, thinking, tool calls, tool results, approvals, user questions, completion state, and token usage. |
+| Music | Display artwork, source app, track metadata, progress, play/pause, previous/next, and open-source-app controls. |
+| System status | Surface CPU, memory, battery, and network status with configurable performance detail pages. |
+| Settings | Configure screen selection, notification sound, agent hooks, shortcuts, glow effects, launch at login, and accessibility. |
+| Appearance | Switch between Music dynamic color, macOS 26+ Glass, and pure Black notch styles. |
 
 ## Agent Support
 
-Nook receives local hook events and turns them into a provider-neutral session timeline.
+Nook normalizes local agent events into a shared session timeline.
 
-- Claude Code: hook install, status tracking, transcript parsing, interrupt detection, and tmux-aware focus helpers.
-- Codex: hook install, transcript parsing, terminal approval state, compacting/subagent events, and stable completed-session history.
-- OpenCode: event-stream integration with live tool placeholders and idle/completion transitions.
-- Cursor: event integration for processing, compacting, completion, and session-end cleanup.
-
-The expanded view shows active and completed sessions, provider identity, current status, working directory, and a chat-style detail view when you drill into a session.
-
-## Music And Performance
-
-Nook can sit quietly when agents are idle, then switch to music or performance context without opening another app.
-
-- Music card: artwork, title, artist, album, progress, keyboard controls, and transport buttons.
-- Adaptive color: the Music appearance uses album artwork colors for the expanded notch background.
-- Edge glow: a subtle music progress glow can be toggled independently.
-- Performance row: quick CPU, memory, battery, and network status on the home page.
-- Performance detail: deeper CPU, memory, battery, network, process, and interface views.
+- Claude Code: hooks, transcript parsing, status tracking, interrupt detection, permission handling, and tmux-aware terminal focus.
+- Codex: hooks, transcript parsing, terminal approval state, compacting and subagent events, and stable completed-session history.
+- OpenCode: event-stream integration with live tool placeholders, user-input state, subagent tracking, and idle/completion transitions.
+- Cursor: session lifecycle, processing/compacting state, thought and response updates, tool calls, and session cleanup.
 
 ## Appearance
 
-Settings exposes three notch styles:
+The settings page exposes three notch styles:
 
-- Glass: real Liquid Glass on macOS 26+ builds and systems.
-- Music: dynamic artwork colors when music is available, black fallback when it is not.
-- Black: a clean solid black notch surface.
+- `Music`: uses artwork-derived colors for the expanded notch when music is playing.
+- `Glass`: uses Liquid Glass on macOS 26+ and only appears when supported.
+- `Black`: keeps the expanded notch clean and solid black.
 
-The collapsed notch stays visually quiet. Glass is only applied to the expanded panel, so the small closed notch keeps the native black look.
+The collapsed notch stays visually quiet; the glass treatment is limited to the expanded panel.
 
 ## Install
 
@@ -90,18 +84,17 @@ xcodebuild -project Nook.xcodeproj -scheme Nook -configuration Debug build
 xcodebuild test -project Nook.xcodeproj -scheme Nook -configuration Debug -derivedDataPath build/TestDerivedData -destination 'platform=macOS'
 ```
 
-See [docs/testing.md](./docs/testing.md) for the current unit-test coverage and provider-specific testing notes.
+See [docs/testing.md](./docs/testing.md) for testing notes.
 
 ## Project Map
 
-- `Nook/App`: app lifecycle, menu bar/window setup, screen observation, single-instance handling.
 - `Nook/Core`: settings, geometry, shortcuts, activity coordination, and view model state.
-- `Nook/Services/Hooks`: local hook installers and Unix socket ingress for agent events.
+- `Nook/Services/Hooks`: hook installers and Unix socket ingress for agent events.
 - `Nook/Services/Session`: transcript parsing, status watching, and session monitoring.
 - `Nook/Services/State`: central session store and tool-event processing.
-- `Nook/Services/Music`: now playing integration, media controls, artwork color extraction.
+- `Nook/Services/Music`: now playing integration, media controls, and artwork color extraction.
 - `Nook/Services/System`: performance sampling.
-- `Nook/UI`: notch chrome, session list, chat detail, music, performance, and settings views.
+- `Nook/UI`: notch shell, session list, chat detail, music, performance, and settings views.
 
 ## Acknowledgements
 
