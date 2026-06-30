@@ -1,6 +1,6 @@
 # Progress
 
-> Last updated: 2026-06-23
+> Last updated: 2026-06-30
 
 ## 🎯 Current Focus
 <!-- Upstream 同步合并（merge commit 7614dad）落地；agents 设置页 UI 完善（shared row customIcon + 4 个 brand icon + debug log 样式对齐）已完成。下一站是 customIcon 的 generic / `some View` 类型优化。 -->
@@ -20,6 +20,7 @@
 | customIcon type | 2026-06-23 用户决议延后 | AnyView? → `some View` 或 generic MenuRow<Icon: View>。brandIcon 的 switch-case 需要 type-erase 仍然是最大阻力。详见 Context Notes |
 
 ## ✅ Recently Completed
+- **#51802fa ExitPlanMode PostToolUse → waiting_for_input** — `Nook/Resources/nook-state.py` `PostToolUse` 分支新增 ExitPlanMode 特判：status 从 `processing` 改为 `waiting_for_input`。语义对齐 Claude TUI 的实际状态——Claude 调完 ExitPlanMode 就停下等用户批 plan,UI 不应继续转 spinner 直到 Stop。注释照搬 PreToolUse AskUserQuestion 的 "turn 边界" 写法。Claude 专属:`nook-state.py` 只被 `HookInstaller` 部署到 `~/.claude/hooks/`,codex/opencode/cursor 走各自 hook 脚本。**部署注意**:`nook-state.py` 是 bundled 资源,源码改动后需要重新 build app 才会被 `HookInstaller.installIfNeeded()` 复制到 `~/.claude/hooks/` 覆盖旧版。
 - **#1da72a0 ⌃M 进入 performance 页面** — `PerformanceSummaryRow` 加本地 `NSEvent.addLocalMonitorForEvents` 监听 ⌃M → 调用现有的 `action` 闭包（即 `viewModel.pushTo(.performance(.overview))`）。卡片 hover 时显示 `⌃M` tooltip（复制 `shortcutTooltip` modifier 到本文件 `private` 命名空间；**第三个调用方出现时记得把 modifier 提到 `UI/Components/ShortcutTooltip.swift` 共用**）。完全模仿 `MusicCardView` 的 ⌃O 模式：不进 `ShortcutAction` / `ShortcutSettingsView`、不可定制。性能监视器关闭时行不渲染 → monitor 不安装 → ⌃M 自然不响应，无需额外守卫。NSTextView/NSTextField 聚焦时透传不抢键。spec `2026-06-29-performance-row-ctrl-m-shortcut-design` / plan `2026-06-29-performance-row-ctrl-m-shortcut`。
 - **#1ea6fe0 agents 页面 brand icon + 样式对齐** — 新增 `OpenCodeLogoIcon`（官方 SVG 24×24 viewBox → SwiftUI Canvas，even-odd fill 画 16×20 ring - 8×12 hole，fit-to-box 缩放到 16×16）。`AgentSettingsView` 删除 `agentMainRow` / `settingsProviderIcon`，改用 `MenuRow` 直接渲染静态行（样式 100% 来自共享组件）。新增 `brandIcon(for:)` helper 给 4 个 provider 配 brand icon，外层 16×16 frame 统一槽宽：Claude `size: 12.6`（66/52 自然宽高比，居中保螃蟹完整），其他 `size: 16`（撑满）。debug log 行顺手对齐 MenuToggleRow baseline（padding 12/10、clear→0.08 hover→0.12 focus、hover 文字增亮）。
 - **#a1a8b1d 共享 row 支持 customIcon + trailingLabel 样式** — `MenuRow` / `ExpandableSettingsRow` 加 `customIcon: AnyView?` 参数（覆盖 SF Symbol）。`MenuRow` 加 `trailingLabelDesign`（默认/`.monospaced`）和 `trailingLabelDimmed`（0.35 vs 0.55 透明度）两个样式参数。`trailingLabel` 默认加 `lineLimit(1) + truncationMode(.middle)`。trade-off：AnyView 而非 generic，agents 是目前唯一非 nil 调用点，type-erase 成本付在唯一一处。
@@ -115,6 +116,7 @@
   - `Nook/Services/Shared/ChatItemSorter.swift`（fast path）
   - `Nook/Services/State/SessionStore.swift`（chatItems 状态机 + publishState）
   - `Nook/UI/Views/ChatView.swift`（`hasResult` / chevron / `focusTerminal()` / `focusErrorMessage`）
+  - `Nook/Resources/nook-state.py`（Claude Code 钩子脚本,被 `HookInstaller` 自动部署到 `~/.claude/hooks/`;改完需重新 build app）
   - `Nook/UI/Views/ClaudeInstancesView.swift`（`stateIndicator` phase）
   - `Nook/UI/Views/ToolResultViews.swift`（`AskUserQuestionResultContent`）
   - `Nook/Utilities/MCPToolFormatter.swift`（OpenCode 小写 toolAliases）
