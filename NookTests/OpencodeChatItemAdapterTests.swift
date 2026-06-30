@@ -123,14 +123,23 @@ final class OpencodeChatItemAdapterTests: XCTestCase {
         XCTAssertEqual(completedTool.status, .success)
         XCTAssertEqual(completedTool.result, "hi\n")
 
-        let stop = adapter.adaptAndConvert(envelope(
+        let idle = adapter.adaptAndConvert(envelope(
             "session.status",
             sessionId: sessionId,
             properties: ["status": ["type": "idle"]]
         ))
+        XCTAssertTrue(idle.chatItemUpdates.isEmpty)
+        XCTAssertTrue(idle.passthroughEvents.isEmpty)
+
+        let stop = adapter.adaptAndConvert(envelope(
+            "session.idle",
+            sessionId: sessionId,
+            properties: [:]
+        ))
         XCTAssertTrue(stop.chatItemUpdates.isEmpty)
         XCTAssertEqual(stop.passthroughEvents.count, 1)
-        guard case .stop(let stoppedSession, _) = stop.passthroughEvents[0] else {
+        guard let stopEvent = stop.passthroughEvents.first,
+              case .stop(let stoppedSession, _) = stopEvent else {
             return XCTFail("Expected stop passthrough")
         }
         XCTAssertEqual(stoppedSession, sessionId)

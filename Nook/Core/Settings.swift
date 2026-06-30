@@ -31,8 +31,42 @@ enum NotificationSound: String, CaseIterable {
     }
 }
 
+enum NotchAppearanceStyle: String, CaseIterable, Identifiable {
+    case liquidGlass
+    case adaptiveArtwork
+    case pureBlack
+
+    nonisolated var id: String { rawValue }
+
+    nonisolated static var availableCases: [NotchAppearanceStyle] {
+        if #available(macOS 26.0, *) {
+            return allCases
+        }
+        return allCases.filter { $0 != .liquidGlass }
+    }
+
+    nonisolated var resolvedForCurrentSystem: NotchAppearanceStyle {
+        if self == .liquidGlass {
+            if #available(macOS 26.0, *) {
+                return self
+            }
+            return .adaptiveArtwork
+        }
+        return self
+    }
+
+    nonisolated var displayName: String {
+        switch self {
+        case .liquidGlass: return "Glass"
+        case .adaptiveArtwork: return "Music"
+        case .pureBlack: return "Black"
+        }
+    }
+}
+
 enum AppSettings {
     private nonisolated(unsafe) static let defaults = UserDefaults.standard
+    nonisolated static let notchAppearanceStyleKey = "notchAppearanceStyle"
     nonisolated static let artworkAdaptiveBackgroundEnabledKey = "artworkAdaptiveBackgroundEnabled"
     nonisolated static let musicEdgeGlowEnabledKey = "musicEdgeGlowEnabled"
     nonisolated static let vibeGlowEnabledKey = "vibeGlowEnabled"
@@ -46,6 +80,7 @@ enum AppSettings {
     private enum Keys {
         nonisolated static let notificationSound = "notificationSound"
         nonisolated static let claudeDirectoryName = "claudeDirectoryName"
+        nonisolated static let notchAppearanceStyle = AppSettings.notchAppearanceStyleKey
         nonisolated static let artworkAdaptiveBackgroundEnabled = AppSettings.artworkAdaptiveBackgroundEnabledKey
         nonisolated static let musicEdgeGlowEnabled = AppSettings.musicEdgeGlowEnabledKey
         nonisolated static let vibeGlowEnabled = AppSettings.vibeGlowEnabledKey
@@ -61,6 +96,7 @@ enum AppSettings {
     }
 
     nonisolated static func registerDefaults() {
+        migrateNotchAppearanceStyleIfNeeded()
         defaults.register(defaults: [
             Keys.artworkAdaptiveBackgroundEnabled: true,
             Keys.musicEdgeGlowEnabled: true,
@@ -75,6 +111,21 @@ enum AppSettings {
             Keys.cursorHooksEnabled: true,
             Keys.debugLogEnabled: false,
         ])
+    }
+
+    private nonisolated static func migrateNotchAppearanceStyleIfNeeded() {
+        guard defaults.object(forKey: Keys.notchAppearanceStyle) == nil else { return }
+
+        let legacyArtworkEnabled: Bool
+        if defaults.object(forKey: Keys.artworkAdaptiveBackgroundEnabled) == nil {
+            legacyArtworkEnabled = true
+            defaults.set(true, forKey: Keys.artworkAdaptiveBackgroundEnabled)
+        } else {
+            legacyArtworkEnabled = defaults.bool(forKey: Keys.artworkAdaptiveBackgroundEnabled)
+        }
+
+        let migratedStyle: NotchAppearanceStyle = legacyArtworkEnabled ? .adaptiveArtwork : .pureBlack
+        defaults.set(migratedStyle.rawValue, forKey: Keys.notchAppearanceStyle)
     }
 
     // MARK: - Notification Sound
@@ -110,6 +161,21 @@ enum AppSettings {
 
     // MARK: - Artwork Adaptive Background
 
+    nonisolated static var notchAppearanceStyle: NotchAppearanceStyle {
+        get {
+            if let rawValue = defaults.string(forKey: Keys.notchAppearanceStyle),
+               let style = NotchAppearanceStyle(rawValue: rawValue) {
+                return style.resolvedForCurrentSystem
+            }
+            return artworkAdaptiveBackgroundEnabled ? .adaptiveArtwork : .pureBlack
+        }
+        set {
+            let resolvedStyle = newValue.resolvedForCurrentSystem
+            defaults.set(resolvedStyle.rawValue, forKey: Keys.notchAppearanceStyle)
+            defaults.set(resolvedStyle == .adaptiveArtwork, forKey: Keys.artworkAdaptiveBackgroundEnabled)
+        }
+    }
+
     /// Controls whether the notch artwork background adapts to the current artwork.
     /// Defaults to enabled.
     nonisolated static var artworkAdaptiveBackgroundEnabled: Bool {
@@ -121,6 +187,10 @@ enum AppSettings {
         }
         set {
             defaults.set(newValue, forKey: Keys.artworkAdaptiveBackgroundEnabled)
+            defaults.set(
+                (newValue ? NotchAppearanceStyle.adaptiveArtwork : .pureBlack).rawValue,
+                forKey: Keys.notchAppearanceStyle
+            )
         }
     }
 

@@ -1,5 +1,15 @@
 # Release Notes
 
+## 1.3.1
+
+What's New
+
+  - Notch Appearance Styles — adds selectable Glass, Music, and Black styles in the settings design controls.
+  - Liquid Glass Support — shows the Glass option on macOS 26+ only and tunes the expanded notch glass surface for a clearer, lighter translucent look.
+  - Music Background Style — keeps the artwork-driven dynamic music background available as its own style.
+  - Black Style — adds a solid black appearance option and keeps the collapsed notch free of glass treatment.
+  - Release Version — bumps Nook to version 1.3.1.
+
 ## 1.3.0
 
 What's New
