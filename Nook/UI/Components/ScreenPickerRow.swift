@@ -12,6 +12,11 @@ struct ScreenPickerRow: View {
     var primaryTextColor: Color = .white
     var secondaryTextColor: Color = .white.opacity(0.4)
     var isFocused: Bool = false
+    var onToggle: ((Bool, CGFloat) -> Void)? = nil
+    /// Last measured content height from ExpandableSettingsRow's
+    /// onToggle, used by collapseAfterDelay to call onToggle with
+    /// the correct height for synchronous panel-height prediction.
+    @State private var pickerMeasuredHeight: CGFloat = 0
 
     private var isExpandedBinding: Binding<Bool> {
         Binding(
@@ -28,7 +33,11 @@ struct ScreenPickerRow: View {
             primaryTextColor: primaryTextColor,
             secondaryTextColor: secondaryTextColor,
             isFocused: isFocused,
-            isExpanded: isExpandedBinding
+            isExpanded: isExpandedBinding,
+            onToggle: { isExpanded, contentHeight in
+                pickerMeasuredHeight = contentHeight
+                onToggle?(isExpanded, contentHeight)
+            }
         ) {
             VStack(spacing: 2) {
                 SettingsSubPickerRow(
@@ -95,8 +104,12 @@ struct ScreenPickerRow: View {
 
     private func collapseAfterDelay() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            // Animate both panel height and picker frame together. The
+            // 2pt buffer keeps the OUTER ScrollView's overflow at -2pt,
+            // so the scrollbar's gutter never flashes.
             withAnimation(.easeInOut(duration: 0.2)) {
                 screenSelector.isPickerExpanded = false
+                onToggle?(false, pickerMeasuredHeight)
             }
         }
     }

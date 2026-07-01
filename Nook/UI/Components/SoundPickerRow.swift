@@ -12,6 +12,7 @@ struct SoundPickerRow: View {
     var primaryTextColor: Color = .white
     var secondaryTextColor: Color = .white.opacity(0.4)
     var isFocused: Bool = false
+    var onToggle: ((Bool, CGFloat) -> Void)? = nil
     @State private var selectedSound: NotificationSound = AppSettings.notificationSound
 
     private var isExpandedBinding: Binding<Bool> {
@@ -29,7 +30,8 @@ struct SoundPickerRow: View {
             primaryTextColor: primaryTextColor,
             secondaryTextColor: secondaryTextColor,
             isFocused: isFocused,
-            isExpanded: isExpandedBinding
+            isExpanded: isExpandedBinding,
+            onToggle: onToggle
         ) {
             ScrollView {
                 VStack(spacing: 2) {

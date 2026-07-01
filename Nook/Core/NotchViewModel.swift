@@ -129,9 +129,6 @@ class NotchViewModel: ObservableObject {
 
     // MARK: - Dependencies
 
-    private let screenSelector = ScreenSelector.shared
-    private let soundSelector = SoundSelector.shared
-    private let claudeDirSelector = ClaudeDirSelector.shared
     /// The app that was frontmost before Nook took focus (for restoring on close).
     private(set) var previousActiveApp: NSRunningApplication?
 
@@ -145,6 +142,34 @@ class NotchViewModel: ObservableObject {
     var screenRect: CGRect { geometry.screenRect }
     var windowHeight: CGFloat { geometry.windowHeight }
 
+    /// Extra height added on top of the strict `contentHeight + header +
+    /// 12pt` formula. Without this buffer, the ScrollView's contentSize
+    /// (== `menuContentHeight`, reported by GeometryReader) sits *exactly*
+    /// at its visible area (== `notchSize.height - header - 12`), so the
+    /// scrollbar flashes in and out due to subpixel rounding in
+    /// SwiftUI's scrollbar visibility threshold.
+    ///
+    /// Empirical finding: macOS NSScroller reserves the scrollbar gutter
+    /// when content is growing close to the visible area, even with
+    /// strictly negative overflow. 2pt, 8pt, 10pt, 12pt all still tripped
+    /// the gutter on expand. 16pt is the smallest buffer that holds
+    /// reliably (user-tested 2026-07-01). Cost: 14pt of visible empty
+    /// space at the panel bottom. If a tighter value is desired, the
+    /// root cause needs to be addressed architecturally (cancel the
+    /// GeometryReader feedback loop) — see PROGRESS.md "Scrollbar flicker
+    /// 9 次修复经验".
+    ///
+    /// History: docs/debug/2026-06-30-appearance-style-scrollbar-regression.md
+    private let panelContentBuffer: CGFloat = 16
+
+    /// Bottom margin kept clear of the screen edge so the panel never
+    /// bleeds into the dock / menu bar. The window itself is already
+    /// sized to the usable area, but `geometry.windowHeight` is the
+    /// hard upper bound on the panel — capping `openedSize.height` to
+    /// it prevents the panel from being clipped on small screens (e.g.
+    /// 13" MacBook) when the menu has a tall Sound picker expanded.
+    private let panelBottomMargin: CGFloat = 16
+
     /// Dynamic opened size based on content type
     var openedSize: CGSize {
         switch contentType {
@@ -156,12 +181,25 @@ class NotchViewModel: ObservableObject {
             )
         case .menu:
             // Height = live-measured VStack content + headerRow (device notch height,
-            // minimum 24pt for non-notched) + 12pt bottom padding.
-            // GeometryReader inside NotchMenuView reports actual content height.
+            // minimum 24pt for non-notched) + 12pt bottom padding + `panelContentBuffer`
+            // slack so the OUTER ScrollView's contentSize sits strictly below its
+            // visible area. GeometryReader inside NotchMenuView reports actual content
+            // height; without the buffer, contentSize == visibleArea and the scrollbar
+            // flashes on every picker toggle.
+            //
+            // `panelBottomMargin` reserves clearance at the screen bottom.
+            // On smaller screens (e.g. 13" MacBook, ~900pt window) the
+            // Sound picker pushes the panel past the window; without the
+            // cap the panel is clipped and the OUTER ScrollView shows a
+            // permanent scrollbar. Capping here keeps the panel inside
+            // the window — when content overflows the cap, the outer
+            // scrollbar appears as expected (`showsIndicators: true`).
             let headerHeight = max(24, geometry.deviceNotchRect.height)
+            let raw = menuContentHeight + headerHeight + 12 + panelContentBuffer
+            let maxHeight = max(0, geometry.windowHeight - panelBottomMargin)
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
-                height: menuContentHeight + headerHeight + 12
+                height: min(raw, maxHeight)
             )
         case .shortcuts:
             // 36pt Back + 40pt × 7 ShortcutRows + 36pt Reset + 9pt × 2 dividers
@@ -172,15 +210,19 @@ class NotchViewModel: ObservableObject {
             )
         case .agents:
             let headerHeight = max(24, geometry.deviceNotchRect.height)
+            let raw = agentsContentHeight + headerHeight + 12 + panelContentBuffer
+            let maxHeight = max(0, geometry.windowHeight - panelBottomMargin)
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
-                height: agentsContentHeight + headerHeight + 12
+                height: min(raw, maxHeight)
             )
         case .performanceSettings:
             let headerHeight = max(24, geometry.deviceNotchRect.height)
+            let raw = performanceSettingsContentHeight + headerHeight + 12 + panelContentBuffer
+            let maxHeight = max(0, geometry.windowHeight - panelBottomMargin)
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
-                height: performanceSettingsContentHeight + headerHeight + 12
+                height: min(raw, maxHeight)
             )
         case .performance(let section):
             return CGSize(

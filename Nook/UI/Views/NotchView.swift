@@ -221,77 +221,7 @@ struct NotchView: View {
         ZStack(alignment: .top) {
             // Outer container does NOT receive hits - only the notch content does
             VStack(spacing: 0) {
-                notchLayout
-                    .frame(
-                        maxWidth: viewModel.status == .opened ? notchSize.width : nil,
-                        alignment: .top
-                    )
-                    .padding(
-                        .horizontal,
-                        viewModel.status == .opened
-                            ? cornerRadiusInsets.opened.top
-                            : cornerRadiusInsets.closed.bottom
-                    )
-                    .padding([.horizontal, .bottom], viewModel.status == .opened ? 12 : 0)
-                    .background {
-                        notchBackground
-                    }
-                    .clipShape(NotchShape(
-                        topCornerRadius: viewModel.animatedTopCornerRadius,
-                        bottomCornerRadius: viewModel.animatedBottomCornerRadius
-                    ))
-                    .overlay(edgeGlowOverlay)
-                    .shadow(
-                        color: notchShadowColor,
-                        radius: notchShadowRadius
-                    )
-                    .frame(
-                        maxWidth: viewModel.status == .opened ? notchSize.width : nil,
-                        maxHeight: viewModel.status == .opened ? notchSize.height : nil,
-                        alignment: .top
-                    )
-                    // Match the panel's height animation to the picker's
-                    // 0.2s easeInOut curve (same as `ExpandableContent`'s
-                    // own frame animation). They MUST use the same curve,
-                    // otherwise the panel leads/lags the VStack's ideal
-                    // height during expand, briefly clipping the ScrollView
-                    // and flashing the scrollbar.
-                    //
-                    // Note: `openAnimation` (spring 0.42/0.8) was tried
-                    // here previously and caused agents-page flicker
-                    // because spring's curve doesn't track the 0.2s
-                    // easeInOut picker curve — VStack actual < VStack ideal
-                    // during the mismatch window. `.settingsExpand`
-                    // matches the picker curve exactly, so VStack actual
-                    // stays = VStack ideal throughout the animation.
-                    .animation(.settingsExpand, value: notchSize)
-                    .animation(viewModel.status == .opened ? openAnimation : closeAnimation, value: viewModel.status)
-                    .animation(.smooth, value: activityCoordinator.expandingActivity)
-                    .animation(.smooth, value: hasPendingPermission)
-                    .animation(.smooth, value: hasWaitingForInput)
-                    .animation(.smooth, value: showMusicActivity)
-                    .animation(.smooth, value: vibeGlowEnabled)
-                    .animation(.smooth, value: notchAppearanceStyleRaw)
-                    .animation(.smooth(duration: 0.45), value: musicManager.playbackState.artworkData)
-                    .animation(.spring(response: 0.3, dampingFraction: 0.5), value: isBouncing)
-                    .contentShape(Rectangle())
-                    .onHover { hovering in
-                        withAnimation(.spring(response: 0.38, dampingFraction: 0.8)) {
-                            isHovering = hovering
-                        }
-                    }
-                    .onTapGesture {
-                        if viewModel.status != .opened {
-                            // Don't re-open if we just closed due to clicking the notch area.
-                            // The NSEvent monitor fires first and already handled the close;
-                            // without this guard the SwiftUI gesture would immediately re-open.
-                            if let closedAt = viewModel.closedByTapAt,
-                               Date().timeIntervalSince(closedAt) < 0.2 {
-                                return
-                            }
-                            handleNotchTap()
-                        }
-                    }
+                panel
             }
         }
         .opacity(isVisible ? 1 : 0)
@@ -625,6 +555,92 @@ struct NotchView: View {
                     }
                 }
         }
+    }
+
+    @ViewBuilder
+    private var panel: some View {
+        notchLayout
+            .frame(
+                maxWidth: viewModel.status == .opened ? notchSize.width : nil,
+                alignment: .top
+            )
+            .padding(
+                .horizontal,
+                viewModel.status == .opened
+                    ? cornerRadiusInsets.opened.top
+                    : cornerRadiusInsets.closed.bottom
+            )
+            .padding([.horizontal, .bottom], viewModel.status == .opened ? 12 : 0)
+            .background {
+                notchBackground
+            }
+            .clipShape(NotchShape(
+                topCornerRadius: viewModel.animatedTopCornerRadius,
+                bottomCornerRadius: viewModel.animatedBottomCornerRadius
+            ))
+            .overlay(edgeGlowOverlay)
+            .shadow(
+                color: notchShadowColor,
+                radius: notchShadowRadius
+            )
+            .frame(
+                maxWidth: viewModel.status == .opened ? notchSize.width : nil,
+                maxHeight: viewModel.status == .opened ? notchSize.height : nil,
+                alignment: .top
+            )
+            // Panel animation contract — single source of truth.
+            //
+            // Every `.animation(_, value:)` on the panel lives in
+            // `panelAnimationContract(...)` so we can't accidentally
+            // introduce a curve mismatch with the picker's frame
+            // animation (which uses `.settingsExpand`). Adding a
+            // new panel state animation? Extend `PanelAnimationInputs`
+            // and the modifier — do NOT inline another `.animation`
+            // call here.
+            //
+            // History: docs/debug/2026-06-22-settings-page-scrollbar-flash.md
+            // Regression (Release 1.3.1): docs/debug/2026-06-30-appearance-style-scrollbar-regression.md
+            .panelAnimationContract(
+                inputs: PanelAnimationInputs(
+                    notchSize: notchSize,
+                    status: viewModel.status,
+                    expandingActivity: activityCoordinator.expandingActivity,
+                    hasPendingPermission: hasPendingPermission,
+                    hasWaitingForInput: hasWaitingForInput,
+                    showMusicActivity: showMusicActivity,
+                    vibeGlowEnabled: vibeGlowEnabled,
+                    notchAppearanceStyleRaw: notchAppearanceStyleRaw,
+                    artworkData: musicManager.playbackState.artworkData,
+                    isBouncing: isBouncing
+                ),
+                openAnimation: openAnimation,
+                closeAnimation: closeAnimation
+            )
+            .onChange(of: notchAppearanceStyleRaw) { oldValue, newValue in
+                // Appearance style changed; panel may need to resize.
+            }
+            .onChange(of: notchSize) { oldValue, newValue in
+                // DIAGNOSTIC: log panel size changes to correlate with scrollbar visibility
+                DebugLog.shared.write("[notch-size] h:\(String(format: "%.1f", oldValue.height))→\(String(format: "%.1f", newValue.height)) w:\(String(format: "%.1f", oldValue.width))→\(String(format: "%.1f", newValue.width)) status=\(viewModel.status)")
+            }
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                withAnimation(.spring(response: 0.38, dampingFraction: 0.8)) {
+                    isHovering = hovering
+                }
+            }
+            .onTapGesture {
+                if viewModel.status != .opened {
+                    // Don't re-open if we just closed due to clicking the notch area.
+                    // The NSEvent monitor fires first and already handled the close;
+                    // without this guard the SwiftUI gesture would immediately re-open.
+                    if let closedAt = viewModel.closedByTapAt,
+                       Date().timeIntervalSince(closedAt) < 0.2 {
+                        return
+                    }
+                    handleNotchTap()
+                }
+            }
     }
 
     @ViewBuilder

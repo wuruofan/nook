@@ -21,6 +21,12 @@ private struct ExpandableContentHeightKey: PreferenceKey {
 
 struct ExpandableContent<Content: View>: View {
     let isExpanded: Bool
+    /// Called whenever the GeometryReader measures a new content height.
+    /// The parent can use this to store the height for synchronous panel
+    /// updates in the picker's onToggle callback (same animation transaction
+    /// as isExpanded.toggle()), eliminating the 1-2 frame lag that causes
+    /// scrollbar flicker.
+    var onHeightMeasured: ((CGFloat) -> Void)? = nil
     @ViewBuilder let content: Content
 
     /// Natural height of `content`, measured by the background GeometryReader.
@@ -64,6 +70,8 @@ struct ExpandableContent<Content: View>: View {
             .onPreferenceChange(ExpandableContentHeightKey.self) { height in
                 contentHeight = height
                 if !hasMeasured { hasMeasured = true }
+                onHeightMeasured?(height)
+                DebugLog.shared.write("[picker-height] measured=\(String(format: "%.1f", height))pt expanded=\(isExpanded)")
             }
             .animation(
                 hasMeasured ? .settingsExpand : nil,

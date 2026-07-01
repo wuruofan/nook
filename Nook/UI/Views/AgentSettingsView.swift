@@ -12,6 +12,10 @@ struct AgentSettingsView: View {
     @State private var opencodeHooksInstalled = false
     @State private var cursorHooksInstalled = false
     @State private var debugLogOn: Bool = AppSettings.debugLogEnabled
+    /// Measured content height for the Claude dir picker row, populated
+    /// by ExpandableSettingsRow's onToggle callback. Used by keyboard
+    /// handler to predict final height synchronously.
+    @State private var claudeDirPickerMeasuredHeight: CGFloat = 0
     @State private var didAppear = false
     // Hover state for the debug log row. Agent main rows now reuse
     // MenuRow (which owns its own hover state), so only the debug log
@@ -97,7 +101,19 @@ struct AgentSettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onPreferenceChange(AgentsContentHeightKey.self) { height in
-            viewModel.agentsContentHeight = height
+            // Track the VStack's content size in the same animation
+            // transaction as the picker's frame animation so the panel
+            // height stays in lock-step. With the 2pt `panelContentBuffer`,
+            // overflow stays at -2pt — no scrollbar flicker.
+            withAnimation(.easeInOut(duration: 0.2)) {
+                viewModel.agentsContentHeight = height
+            }
+            // DIAGNOSTIC: log scrollbar visibility state
+            let headerHeight = max(24, viewModel.geometry.deviceNotchRect.height)
+            let visibleArea = viewModel.openedSize.height - headerHeight - 12
+            let overflow = height - visibleArea
+            let willScroll = overflow > 0.5
+            DebugLog.shared.write("[agents-pref] vstack=\(String(format: "%.1f", height))pt agentsHeight=\(String(format: "%.1f", viewModel.agentsContentHeight))pt openedSize=\(String(format: "%.1f", viewModel.openedSize.height))pt visibleArea=\(String(format: "%.1f", visibleArea))pt overflow=\(String(format: "%.1f", overflow))pt scrollbar=\(willScroll ? "VISIBLE" : "hidden")")
         }
         .onAppear {
             didAppear = true
@@ -144,8 +160,14 @@ struct AgentSettingsView: View {
         case backIndex:
             viewModel.navigateBack()
         case claudeMainIndex:
+            // Animate both panel height and picker frame in the same
+            // withAnimation block so the OUTER ScrollView's contentView
+            // tracks the VStack's contentSize. The 2pt buffer keeps the
+            // overflow at -2pt — no scrollbar flicker.
+            let newExpanded = !viewModel.agentsClaudeDirPickerExpanded
             withAnimation(.easeInOut(duration: 0.2)) {
-                viewModel.agentsClaudeDirPickerExpanded.toggle()
+                viewModel.agentsClaudeDirPickerExpanded = newExpanded
+                viewModel.agentsContentHeight += newExpanded ? claudeDirPickerMeasuredHeight : -claudeDirPickerMeasuredHeight
             }
         case codexMainIndex, opencodeMainIndex, cursorMainIndex:
             break // Static rows — no action on activate.
@@ -220,7 +242,11 @@ struct AgentSettingsView: View {
                     primaryTextColor: primaryTextColor,
                     secondaryTextColor: secondaryTextColor,
                     isFocused: viewModel.settingsFocusedIndex == claudeMainIndex,
-                    isExpanded: $viewModel.agentsClaudeDirPickerExpanded
+                    isExpanded: $viewModel.agentsClaudeDirPickerExpanded,
+                    onToggle: { isExpanded, contentHeight in
+                        claudeDirPickerMeasuredHeight = contentHeight
+                        viewModel.agentsContentHeight += isExpanded ? contentHeight : -contentHeight
+                    }
                 ) {
                     claudeDirPickerOptions
                 }

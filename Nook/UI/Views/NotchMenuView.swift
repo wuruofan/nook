@@ -32,13 +32,19 @@ struct NotchMenuView: View {
     @State private var launchAtLogin: Bool = false
     @State private var didAppear = false
     @State private var isAppearancePickerExpanded = false
+    /// Measured content heights for each picker row, populated by
+    /// ExpandableSettingsRow's onToggle callback. Used by keyboard
+    /// handlers to predict the final height synchronously (same frame
+    /// as isExpanded.toggle()), so the panel starts animating at T+0
+    /// instead of waiting for the delayed onPreferenceChange fire.
+    @State private var screenPickerMeasuredHeight: CGFloat = 0
+    @State private var soundPickerMeasuredHeight: CGFloat = 0
+    @State private var appearancePickerMeasuredHeight: CGFloat = 0
     @AppStorage(AppSettings.notchAppearanceStyleKey) private var notchAppearanceStyleRaw = NotchAppearanceStyle.adaptiveArtwork.rawValue
     @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
     @AppStorage(AppSettings.vibeGlowEnabledKey) private var vibeGlowEnabled = false
 
     var body: some View {
-        // ScrollView so the menu gracefully scrolls when content exceeds the
-        // panel height (e.g. both picker rows expanded on a small panel).
         ScrollView(.vertical, showsIndicators: true) {
             VStack(spacing: 4) {
                 // Back button
@@ -60,13 +66,21 @@ struct NotchMenuView: View {
                     screenSelector: screenSelector,
                     primaryTextColor: primaryTextColor,
                     secondaryTextColor: secondaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 1
+                    isFocused: viewModel.settingsFocusedIndex == 1,
+                    onToggle: { isExpanded, contentHeight in
+                        screenPickerMeasuredHeight = contentHeight
+                        viewModel.menuContentHeight += isExpanded ? contentHeight : -contentHeight
+                    }
                 )
                 SoundPickerRow(
                     soundSelector: soundSelector,
                     primaryTextColor: primaryTextColor,
                     secondaryTextColor: secondaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 2
+                    isFocused: viewModel.settingsFocusedIndex == 2,
+                    onToggle: { isExpanded, contentHeight in
+                        soundPickerMeasuredHeight = contentHeight
+                        viewModel.menuContentHeight += isExpanded ? contentHeight : -contentHeight
+                    }
                 )
 
                 MenuRow(
@@ -109,7 +123,11 @@ struct NotchMenuView: View {
                     primaryTextColor: primaryTextColor,
                     secondaryTextColor: secondaryTextColor,
                     isFocused: viewModel.settingsFocusedIndex == 6,
-                    isExpanded: $isAppearancePickerExpanded
+                    isExpanded: $isAppearancePickerExpanded,
+                    onToggle: { isExpanded, contentHeight in
+                        appearancePickerMeasuredHeight = contentHeight
+                        viewModel.menuContentHeight += isExpanded ? contentHeight : -contentHeight
+                    }
                 ) { style in
                     setAppearanceStyle(style)
                 }
@@ -205,7 +223,23 @@ struct NotchMenuView: View {
             )
         }
         .onPreferenceChange(MenuContentHeightKey.self) { height in
-            viewModel.menuContentHeight = height
+            // The onToggle callback (inside ExpandableSettingsRow.Button) has
+            // already started the panel height animation alongside the
+            // picker's frame animation (both share the 0.2s easeInOut curve).
+            // This preference fires 1+ frames later with intermediate
+            // heights during the animation. We update `menuContentHeight` in
+            // the same animation transaction so the panel tracks the VStack
+            // throughout — keeping the OUTER ScrollView's overflow constant
+            // at the 2pt buffer's `-2pt` and the scrollbar hidden.
+            withAnimation(.easeInOut(duration: 0.2)) {
+                viewModel.menuContentHeight = height
+            }
+            // DIAGNOSTIC: log scrollbar visibility state
+            let headerHeight = max(24, viewModel.geometry.deviceNotchRect.height)
+            let visibleArea = viewModel.openedSize.height - headerHeight - 12
+            let overflow = height - visibleArea
+            let willScroll = overflow > 0.5
+            DebugLog.shared.write("[menu-pref] vstack=\(String(format: "%.1f", height))pt menuHeight=\(String(format: "%.1f", viewModel.menuContentHeight))pt openedSize=\(String(format: "%.1f", viewModel.openedSize.height))pt visibleArea=\(String(format: "%.1f", visibleArea))pt overflow=\(String(format: "%.1f", overflow))pt scrollbar=\(willScroll ? "VISIBLE" : "hidden")")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
@@ -228,12 +262,15 @@ struct NotchMenuView: View {
         let i = viewModel.settingsFocusedIndex
         switch i {
         case 0: viewModel.toggleMenu()
-        case 1: withAnimation(.easeInOut(duration: 0.2)) { screenSelector.isPickerExpanded.toggle() }
-        case 2: withAnimation(.easeInOut(duration: 0.2)) { soundSelector.isPickerExpanded.toggle() }
+        case 1:
+            toggleScreenPickerFromKeyboard()
+        case 2:
+            toggleSoundPickerFromKeyboard()
         case 3: viewModel.pushTo(.agents)
         case 4: viewModel.pushTo(.performanceSettings)
         case 5: viewModel.pushTo(.shortcuts)
-        case 6: withAnimation(.easeInOut(duration: 0.2)) { isAppearancePickerExpanded.toggle() }
+        case 6:
+            toggleAppearancePickerFromKeyboard()
         case 7: musicEdgeGlowEnabled.toggle()
         case 8: vibeGlowEnabled.toggle()
         case 9:
@@ -258,6 +295,42 @@ struct NotchMenuView: View {
             }
         case 12: NSApplication.shared.terminate(nil)
         default: break
+        }
+    }
+
+    /// Keyboard-driven picker toggle. Animate BOTH the panel height and
+    /// the picker's frame inside the same `withAnimation` block so they
+    /// share the 0.2s easeInOut curve and the OUTER ScrollView's
+    /// contentView tracks the VStack's contentSize throughout the
+    /// transition. With the 2pt `panelContentBuffer`, the overflow
+    /// stays at -2pt — no scrollbar flicker in either direction.
+    ///
+    /// Snapping the panel (disablesAnimations) was tried and rejected:
+    /// on collapse, the VStack content animates from `expanded` down to
+    /// `collapsed` while contentView stays snapped at the lower value,
+    /// so VStack > contentView for the entire 200ms and the scrollbar
+    /// gutter flashes the whole time.
+    private func toggleScreenPickerFromKeyboard() {
+        let newExpanded = !screenSelector.isPickerExpanded
+        withAnimation(.easeInOut(duration: 0.2)) {
+            screenSelector.isPickerExpanded = newExpanded
+            viewModel.menuContentHeight += newExpanded ? screenPickerMeasuredHeight : -screenPickerMeasuredHeight
+        }
+    }
+
+    private func toggleSoundPickerFromKeyboard() {
+        let newExpanded = !soundSelector.isPickerExpanded
+        withAnimation(.easeInOut(duration: 0.2)) {
+            soundSelector.isPickerExpanded = newExpanded
+            viewModel.menuContentHeight += newExpanded ? soundPickerMeasuredHeight : -soundPickerMeasuredHeight
+        }
+    }
+
+    private func toggleAppearancePickerFromKeyboard() {
+        let newExpanded = !isAppearancePickerExpanded
+        withAnimation(.easeInOut(duration: 0.2)) {
+            isAppearancePickerExpanded = newExpanded
+            viewModel.menuContentHeight += newExpanded ? appearancePickerMeasuredHeight : -appearancePickerMeasuredHeight
         }
     }
 
@@ -816,6 +889,7 @@ struct AppearanceStylePickerRow: View {
     var secondaryTextColor: Color = .white.opacity(0.4)
     var isFocused: Bool = false
     @Binding var isExpanded: Bool
+    var onToggle: ((Bool, CGFloat) -> Void)? = nil
     let action: (NotchAppearanceStyle) -> Void
 
     var body: some View {
@@ -826,7 +900,8 @@ struct AppearanceStylePickerRow: View {
             primaryTextColor: primaryTextColor,
             secondaryTextColor: secondaryTextColor,
             isFocused: isFocused,
-            isExpanded: $isExpanded
+            isExpanded: $isExpanded,
+            onToggle: onToggle
         ) {
             VStack(spacing: 2) {
                 ForEach(NotchAppearanceStyle.availableCases) { style in

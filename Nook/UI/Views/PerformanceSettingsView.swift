@@ -18,6 +18,10 @@ struct PerformanceSettingsView: View {
     @AppStorage(AppSettings.musicAbovePerformanceKey) private var musicAbovePerformance = false
     @AppStorage(AppSettings.performanceVisibleSectionsKey) private var visibleSectionsRaw: String = "cpu,memory,battery,network"
 
+    /// Measured content height for the Visible Metrics picker row,
+    /// populated by ExpandableSettingsRow's onToggle callback. Used
+    /// by keyboard handler to predict final height synchronously.
+    @State private var metricsPickerMeasuredHeight: CGFloat = 0
     @State private var didAppear = false
 
     private var visibleSet: Set<String> {
@@ -94,7 +98,11 @@ struct PerformanceSettingsView: View {
                     primaryTextColor: primaryTextColor,
                     secondaryTextColor: secondaryTextColor,
                     isFocused: viewModel.settingsFocusedIndex == 3,
-                    isExpanded: $viewModel.performanceSettingsMetricsExpanded
+                    isExpanded: $viewModel.performanceSettingsMetricsExpanded,
+                    onToggle: { isExpanded, contentHeight in
+                        metricsPickerMeasuredHeight = contentHeight
+                        viewModel.performanceSettingsContentHeight += isExpanded ? contentHeight : -contentHeight
+                    }
                 ) {
                     ForEach(Array(PerformanceSection.detailAll.enumerated()), id: \.element) { index, section in
                         let focusedIndex = 4 + index
@@ -122,7 +130,19 @@ struct PerformanceSettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onPreferenceChange(PerformanceSettingsContentHeightKey.self) { height in
-            viewModel.performanceSettingsContentHeight = height
+            // Track the VStack's content size in the same animation
+            // transaction as the picker's frame animation so the panel
+            // height stays in lock-step. With the 2pt `panelContentBuffer`,
+            // overflow stays at -2pt — no scrollbar flicker.
+            withAnimation(.easeInOut(duration: 0.2)) {
+                viewModel.performanceSettingsContentHeight = height
+            }
+            // DIAGNOSTIC: log scrollbar visibility state
+            let headerHeight = max(24, viewModel.geometry.deviceNotchRect.height)
+            let visibleArea = viewModel.openedSize.height - headerHeight - 12
+            let overflow = height - visibleArea
+            let willScroll = overflow > 0.5
+            DebugLog.shared.write("[perf-pref] vstack=\(String(format: "%.1f", height))pt perfHeight=\(String(format: "%.1f", viewModel.performanceSettingsContentHeight))pt openedSize=\(String(format: "%.1f", viewModel.openedSize.height))pt visibleArea=\(String(format: "%.1f", visibleArea))pt overflow=\(String(format: "%.1f", overflow))pt scrollbar=\(willScroll ? "VISIBLE" : "hidden")")
         }
         .onAppear {
             didAppear = true
@@ -140,9 +160,13 @@ struct PerformanceSettingsView: View {
             case 1: performanceMonitorEnabled.toggle()
             case 2: musicAbovePerformance.toggle()
             case 3:
+                // Animate both panel height and picker frame in the same
+                // withAnimation block. The 2pt buffer keeps overflow at -2pt.
+                let newExpanded = !viewModel.performanceSettingsMetricsExpanded
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    viewModel.performanceSettingsMetricsExpanded.toggle()
-                    if !viewModel.performanceSettingsMetricsExpanded {
+                    viewModel.performanceSettingsMetricsExpanded = newExpanded
+                    viewModel.performanceSettingsContentHeight += newExpanded ? metricsPickerMeasuredHeight : -metricsPickerMeasuredHeight
+                    if !newExpanded {
                         viewModel.settingsFocusedIndex = 3
                     }
                 }
