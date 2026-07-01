@@ -2209,6 +2209,28 @@ actor SessionStore {
                 }
             }
 
+            // Claude: when the Stop hook is missed (e.g. nook-state.py
+            // fails to connect, or the socket is temporarily unavailable),
+            // the session can get stuck in .processing even though Claude
+            // CLI has already gone idle. Check the per-pid status file as
+            // a fallback — if it reports "idle" while our phase is still
+            // active, transition the session out of the stuck state.
+            if session.provider == .claude,
+               session.phase.isActive,
+               let pid = session.pid {
+                if let status = readClaudeStatusFile(pid: pid), status == "idle" {
+                    var updatedSession = session
+                    Self.logger.info("Claude session \(sessionId.prefix(8), privacy: .public) stuck in \(String(describing: session.phase)) but status file is idle; transitioning to idle")
+                    writeDebugLogAsync("[claude-lifecycle] statusFileIdleFallback session=\(sessionId) pid=\(pid) phase=\(String(describing: session.phase))")
+                    updatedSession.phase = .idle
+                    updatedSession.completionNotificationAt = nil
+                    updatedSession.toolTracker.inProgress.removeAll()
+                    sessions[sessionId] = updatedSession
+                    stateChanged = true
+                    continue
+                }
+            }
+
             let needsSync: Bool
             switch (session.provider, session.phase) {
             case (.claude, .processing), (.claude, .waitingForApproval):
@@ -2241,6 +2263,18 @@ actor SessionStore {
     /// Check if a process is still running
     private nonisolated func isProcessRunning(pid: Int) -> Bool {
         return kill(Int32(pid), 0) == 0
+    }
+
+    /// Read the `status` field from Claude's per-pid session file
+    /// (`~/.claude/sessions/{pid}.json`). Returns nil if the file
+    /// doesn't exist or can't be parsed.
+    private nonisolated func readClaudeStatusFile(pid: Int) -> String? {
+        let path = NSHomeDirectory() + "/.claude/sessions/\(pid).json"
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return json["status"] as? String
     }
 
     // MARK: - State Publishing
