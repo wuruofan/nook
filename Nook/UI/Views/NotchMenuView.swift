@@ -754,7 +754,7 @@ struct AccessibilityRow: View {
                     .stroke(isFocused ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NoPressButtonStyle())
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -866,7 +866,7 @@ struct MenuRow<Icon: View>: View {
                     .stroke(isFocused ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NoPressButtonStyle())
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
     }
@@ -969,7 +969,7 @@ struct MenuToggleRow: View {
                     .stroke(isFocused ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NoPressButtonStyle())
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
     }

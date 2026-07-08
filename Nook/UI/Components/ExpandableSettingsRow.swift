@@ -135,7 +135,7 @@ struct ExpandableSettingsRow<Content: View, Icon: View>: View {
                         .stroke(isFocused ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
                 )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(NoPressButtonStyle())
             .onHover { isHovered = $0 }
 
             // Render the same content tree always so the natural height is
@@ -220,7 +220,7 @@ struct SettingsSubPickerRow: View {
                     .stroke(isFocused ? Color.white.opacity(0.22) : Color.clear, lineWidth: 1)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NoPressButtonStyle())
         .onHover { isHovered = $0 }
     }
 
@@ -275,7 +275,7 @@ struct SettingsSubToggleRow: View {
                     .fill(isFocused ? Color.white.opacity(0.08) : (isHovered ? Color.white.opacity(0.06) : Color.clear))
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NoPressButtonStyle())
         .onHover { isHovered = $0 }
         .opacity(locked ? 0.5 : 1.0)
     }
