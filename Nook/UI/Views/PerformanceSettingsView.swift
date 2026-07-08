@@ -18,11 +18,36 @@ struct PerformanceSettingsView: View {
     @AppStorage(AppSettings.musicAbovePerformanceKey) private var musicAbovePerformance = false
     @AppStorage(AppSettings.performanceVisibleSectionsKey) private var visibleSectionsRaw: String = "cpu,memory,battery,network"
 
-    /// Measured content height for the Visible Metrics picker row,
-    /// populated by ExpandableSettingsRow's onToggle callback. Used
-    /// by keyboard handler to predict final height synchronously.
-    @State private var metricsPickerMeasuredHeight: CGFloat = 0
     @State private var didAppear = false
+    // (baseHeightRecorded removed 2026-07-02 — see PickerLayout /
+    //  PageLayout helpers in SettingsPageLayout.swift; height is
+    //  compile-time via `performanceSettingsContentHeight` getter.)
+
+    /// Compile-time layout for the Visible Metrics picker: 4 subRows
+    /// (CPU/Memory/Battery/Network) using `SettingsSubToggleRow`
+    /// (26.13pt tall — font-metric-derived from 12pt label + 6/6
+    /// vertical padding).
+    static var metricsPickerLayout: PickerLayout {
+        PickerLayout(rowCount: 4, rowHeight: settingsSubToggleRowHeight)
+    }
+
+    /// Compile-time layout for the entire performance settings page:
+    /// 4 rows (Back, Monitor, Music-above, Visible Metrics) + 2
+    /// dividers. All rows are `MenuRow` / `MenuToggleRow`
+    /// (font-metric `menuRowHeight` = 35.31pt).
+    static var pageLayout: PageLayout {
+        PageLayout(rowCount: 4, dividerCount: 2)
+    }
+
+    /// Total content height = base (no picker expanded) + picker
+    /// contribution (when expanded). Compile-time, no GeometryReader.
+    private var performanceSettingsContentHeight: CGFloat {
+        Self.pageLayout.dynamicHeight(expandedPickerHeights: [
+            viewModel.performanceSettingsMetricsExpanded
+                ? Self.metricsPickerLayout.expandedHeight
+                : 0
+        ])
+    }
 
     private var visibleSet: Set<String> {
         Set(visibleSectionsRaw.split(separator: ",").map { String($0) })
@@ -99,9 +124,14 @@ struct PerformanceSettingsView: View {
                     secondaryTextColor: secondaryTextColor,
                     isFocused: viewModel.settingsFocusedIndex == 3,
                     isExpanded: $viewModel.performanceSettingsMetricsExpanded,
-                    onToggle: { isExpanded, contentHeight in
-                        metricsPickerMeasuredHeight = contentHeight
-                        viewModel.performanceSettingsContentHeight += isExpanded ? contentHeight : -contentHeight
+                    targetHeight: Self.metricsPickerLayout.expandedHeight,
+                    onToggle: { _, _ in
+                        // Re-derive compile-time height after the
+                        // picker expanded state flipped. PageLayout +
+                        // PickerLayout are bit-for-bit equal to the
+                        // ScrollView's contentSize, so panel.maxHeight
+                        // = contentSize at every frame.
+                        viewModel.performanceSettingsContentHeight = performanceSettingsContentHeight
                     }
                 ) {
                     ForEach(Array(PerformanceSection.detailAll.enumerated()), id: \.element) { index, section in
@@ -121,29 +151,12 @@ struct PerformanceSettingsView: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 8)
-            .background(
-                GeometryReader { g in
-                    Color.clear
-                        .preference(key: PerformanceSettingsContentHeightKey.self, value: g.size.height)
-                }
-            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onPreferenceChange(PerformanceSettingsContentHeightKey.self) { height in
-            // Track the VStack's content size in the same animation
-            // transaction as the picker's frame animation so the panel
-            // height stays in lock-step. With the 2pt `panelContentBuffer`,
-            // overflow stays at -2pt — no scrollbar flicker.
-            withAnimation(.easeInOut(duration: 0.2)) {
-                viewModel.performanceSettingsContentHeight = height
-            }
-            // DIAGNOSTIC: log scrollbar visibility state
-            let headerHeight = max(24, viewModel.geometry.deviceNotchRect.height)
-            let visibleArea = viewModel.openedSize.height - headerHeight - 12
-            let overflow = height - visibleArea
-            let willScroll = overflow > 0.5
-            DebugLog.shared.write("[perf-pref] vstack=\(String(format: "%.1f", height))pt perfHeight=\(String(format: "%.1f", viewModel.performanceSettingsContentHeight))pt openedSize=\(String(format: "%.1f", viewModel.openedSize.height))pt visibleArea=\(String(format: "%.1f", visibleArea))pt overflow=\(String(format: "%.1f", overflow))pt scrollbar=\(willScroll ? "VISIBLE" : "hidden")")
-        }
+        // (GeometryReader / onPreferenceChange removed 2026-07-02 —
+        //  font-metric-derived row heights in SettingsPageLayout.swift
+        //  make PageLayout.staticHeight bit-for-bit equal to ScrollView
+        //  contentSize; no measurement feedback needed.)
         .onAppear {
             didAppear = true
             // Match the convention used by SoundPickerRow / ScreenPickerRow /
@@ -152,6 +165,9 @@ struct PerformanceSettingsView: View {
             // The collapsed state still shows useful info ("2/4") so users
             // can scan visibility without expanding.
             viewModel.performanceSettingsMetricsExpanded = false
+            // Push initial compile-time height (matches ScrollView
+            // contentSize bit-for-bit, so no GeometryReader needed).
+            viewModel.performanceSettingsContentHeight = performanceSettingsContentHeight
         }
         .onReceive(viewModel.$keyboardActivateTrigger) { trigger in
             guard trigger != nil, didAppear else { return }
@@ -160,12 +176,14 @@ struct PerformanceSettingsView: View {
             case 1: performanceMonitorEnabled.toggle()
             case 2: musicAbovePerformance.toggle()
             case 3:
-                // Animate both panel height and picker frame in the same
-                // withAnimation block. The 2pt buffer keeps overflow at -2pt.
+                // Animate both panel height and picker frame in the
+                // same withAnimation block. Re-derive compile-time
+                // height from PageLayout + PickerLayout — no
+                // measurement, no incremental +=.
                 let newExpanded = !viewModel.performanceSettingsMetricsExpanded
                 withAnimation(.easeInOut(duration: 0.2)) {
                     viewModel.performanceSettingsMetricsExpanded = newExpanded
-                    viewModel.performanceSettingsContentHeight += newExpanded ? metricsPickerMeasuredHeight : -metricsPickerMeasuredHeight
+                    viewModel.performanceSettingsContentHeight = performanceSettingsContentHeight
                     if !newExpanded {
                         viewModel.settingsFocusedIndex = 3
                     }
@@ -180,9 +198,7 @@ struct PerformanceSettingsView: View {
     }
 }
 
-private struct PerformanceSettingsContentHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
+// (PerformanceSettingsContentHeightKey PreferenceKey removed 2026-07-02
+//  — GeometryReader feedback loop eliminated by switching to font-metric
+//  row heights in SettingsPageLayout.swift. PageLayout.dynamicHeight
+//  matches ScrollView.contentSize at every frame.)

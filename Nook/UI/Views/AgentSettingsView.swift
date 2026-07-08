@@ -12,11 +12,25 @@ struct AgentSettingsView: View {
     @State private var opencodeHooksInstalled = false
     @State private var cursorHooksInstalled = false
     @State private var debugLogOn: Bool = AppSettings.debugLogEnabled
-    /// Measured content height for the Claude dir picker row, populated
-    /// by ExpandableSettingsRow's onToggle callback. Used by keyboard
-    /// handler to predict final height synchronously.
-    @State private var claudeDirPickerMeasuredHeight: CGFloat = 0
     @State private var didAppear = false
+    /// Once `true`, the initial GeometryReader measurement has been
+    /// recorded and subsequent `onPreferenceChange` callbacks are
+    /// ignored. This prevents the feedback loop from overwriting the
+    /// incremental updates (which use the compile-time
+    /// `claudeDirPickerLayout.expandedHeight`) and causing scrollbar
+    /// flicker.
+    @State private var baseHeightRecorded = false
+
+    /// Compile-time layout for the Claude dir picker: two subRows
+    /// ("Auto-detect", "Choose folder…") with `verticalSublabel: true`.
+    /// `rowHeight` is 46.91pt (font-metric-derived: 12pt label + 1pt
+    /// spacing + 10pt sublabel + 20pt vertical padding).
+    static var claudeDirPickerLayout: PickerLayout {
+        PickerLayout(
+            rowCount: 2,
+            rowHeight: settingsSubPickerRowVerticalSublabelHeight
+        )
+    }
     // Hover state for the debug log row. Agent main rows now reuse
     // MenuRow (which owns its own hover state), so only the debug log
     // row — which is still hand-rolled — needs an external hover flag.
@@ -101,15 +115,30 @@ struct AgentSettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onPreferenceChange(AgentsContentHeightKey.self) { height in
-            // Track the VStack's content size in the same animation
-            // transaction as the picker's frame animation so the panel
-            // height stays in lock-step. With the 2pt `panelContentBuffer`,
-            // overflow stays at -2pt — no scrollbar flicker.
-            withAnimation(.easeInOut(duration: 0.2)) {
+            // Record the initial base height (no picker expanded) from
+            // the GeometryReader's first measurement. After that,
+            // `agentsContentHeight` is updated incrementally by the
+            // picker's `onToggle` callback and the keyboard handler —
+            // using the compile-time `claudeDirPickerLayout.expandedHeight`.
+            //
+            // NOT overwriting here eliminates the double-source-of-truth
+            // conflict that caused scrollbar flicker: the old code ran
+            // `withAnimation { agentsContentHeight = height }` on every
+            // GeometryReader report, which fought the incremental
+            // `+= expandedHeight` updates and briefly put the panel
+            // shorter than the content during collapse → scrollbar flash.
+            if !baseHeightRecorded {
+                baseHeightRecorded = true
+                // Persist the base height so navigation round-trips can
+                // reset `agentsContentHeight` back to baseline instead
+                // of carrying over the stale `+= expandedHeight` from
+                // the previous session — which would re-open the panel
+                // at the expanded height with the picker closed.
+                viewModel.agentsBaseHeight = height
                 viewModel.agentsContentHeight = height
             }
             // DIAGNOSTIC: log scrollbar visibility state
-            let headerHeight = max(24, viewModel.geometry.deviceNotchRect.height)
+            let headerHeight = settingsPageHeaderHeight(for: viewModel.geometry)
             let visibleArea = viewModel.openedSize.height - headerHeight - 12
             let overflow = height - visibleArea
             let willScroll = overflow > 0.5
@@ -124,12 +153,27 @@ struct AgentSettingsView: View {
             // outlier (its expansion persists via VM-level @Published) —
             // we don't follow that pattern here.
             viewModel.agentsClaudeDirPickerExpanded = false
+            // Reset content height in lock-step — the picker's expanded
+            // height (88pt) was added on the previous session and
+            // persists on `viewModel` across View instances.
+            viewModel.agentsContentHeight = viewModel.agentsBaseHeight
         }
-        .onChange(of: viewModel.contentType) { _, newValue in
+        .onChange(of: viewModel.contentType) { oldValue, newValue in
+            if oldValue == .agents && newValue != .agents {
+                // EXIT — reset transient state BEFORE the new View is
+                // created. Doing this here (rather than only on the next
+                // ENTRY's onAppear) avoids a race where the new View's
+                // first GeometryReader / layout pass reads the still-
+                // expanded picker state and snapshots a stale height.
+                viewModel.agentsClaudeDirPickerExpanded = false
+                viewModel.agentsContentHeight = viewModel.agentsBaseHeight
+            }
             if newValue == .agents {
+                // ENTRY — refresh. The EXIT reset above is the
+                // authoritative one; this branch handles the very first
+                // navigation into agents.
                 didAppear = true
                 refreshStates()
-                viewModel.agentsClaudeDirPickerExpanded = false
             }
         }
         // If the Claude picker collapses (mouse click or keyboard) while the
@@ -162,12 +206,14 @@ struct AgentSettingsView: View {
         case claudeMainIndex:
             // Animate both panel height and picker frame in the same
             // withAnimation block so the OUTER ScrollView's contentView
-            // tracks the VStack's contentSize. The 2pt buffer keeps the
-            // overflow at -2pt — no scrollbar flicker.
+            // tracks the VStack's contentSize. Target height comes from
+            // the compile-time `claudeDirPickerLayout` — no measurement.
             let newExpanded = !viewModel.agentsClaudeDirPickerExpanded
             withAnimation(.easeInOut(duration: 0.2)) {
                 viewModel.agentsClaudeDirPickerExpanded = newExpanded
-                viewModel.agentsContentHeight += newExpanded ? claudeDirPickerMeasuredHeight : -claudeDirPickerMeasuredHeight
+                viewModel.agentsContentHeight += newExpanded
+                    ? Self.claudeDirPickerLayout.expandedHeight
+                    : -Self.claudeDirPickerLayout.expandedHeight
             }
         case codexMainIndex, opencodeMainIndex, cursorMainIndex:
             break // Static rows — no action on activate.
@@ -243,8 +289,8 @@ struct AgentSettingsView: View {
                     secondaryTextColor: secondaryTextColor,
                     isFocused: viewModel.settingsFocusedIndex == claudeMainIndex,
                     isExpanded: $viewModel.agentsClaudeDirPickerExpanded,
+                    targetHeight: Self.claudeDirPickerLayout.expandedHeight,
                     onToggle: { isExpanded, contentHeight in
-                        claudeDirPickerMeasuredHeight = contentHeight
                         viewModel.agentsContentHeight += isExpanded ? contentHeight : -contentHeight
                     }
                 ) {
@@ -338,6 +384,11 @@ struct AgentSettingsView: View {
                 label: "Auto-detect",
                 sublabel: resolvedAutoDetectPath,
                 sublabelDesign: .monospaced,
+                // MUST match `claudeDirPickerLayout.rowHeight` — without
+                // `verticalSublabel: true`, each row renders inline
+                // (~27pt) instead of stacked (~41pt), overshooting the
+                // panel by ~28pt and leaving a blank band at the bottom.
+                verticalSublabel: true,
                 isSelected: !isCustomClaudeDir,
                 primaryTextColor: primaryTextColor,
                 secondaryTextColor: secondaryTextColor,
@@ -350,6 +401,7 @@ struct AgentSettingsView: View {
                 label: "Choose folder…",
                 sublabel: isCustomClaudeDir ? shortenedPath(currentClaudeDir) : nil,
                 sublabelDesign: .monospaced,
+                verticalSublabel: true,
                 isSelected: isCustomClaudeDir,
                 primaryTextColor: primaryTextColor,
                 secondaryTextColor: secondaryTextColor,
