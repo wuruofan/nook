@@ -1,19 +1,26 @@
 # Progress
 
-> Last updated: 2026-07-08 (picker sub-row per-row heights)
+> Last updated: 2026-07-08 (1.3.2 follow-ups: picker sub-rows + shortcuts panel height)
 
 ## 🎯 Current Focus
-<!-- 2026-07-08 **picker 子项无 sub desc 时高度/垂直对齐修复**：
+<!-- 2026-07-08 **picker 子项无 sub desc 时高度/垂直对齐修复 + Shortcuts 页面 panel 底部空白修复**（两个 1.3.2 follow-up）：
+
+  ### A. Picker 子项无 sub desc 时高度/垂直对齐
   - **症状**：Screen picker 展开时非 built-in / 非 main 的屏幕行 + Claude dir picker 中 "Choose folder…" 行（未选自定义路径时），`sublabel == nil` 但 `verticalSublabel: true` 强制 `SettingsSubPickerRow` 渲染 41pt 高 + 13pt `Color.clear` 占位 → 标题"上浮"，底部留空白。
   - **根因**：编译期 `pickerLayout.rowHeight` 是单一常量 `settingsSubPickerRowVerticalSublabelHeight`，但运行时不同行的 sublabel 实际有/无是数据驱动的，无法对齐。
-  - **修复**（4 文件，纯逻辑改动）：
+  - **修复**（4 文件）：
     1. `SettingsSubPickerRow` 引入 `showsVerticalSublabel = verticalSublabel && sublabel != nil`，无 sublabel 时自动回落小尺寸 (~27pt) + 标题垂直居中（删除原 Color.clear 占位）。
-    2. `PickerLayout` 支持每行独立高度 `init(rowHeights: [CGFloat])`，保留原 `init(rowCount:rowHeight:)` 作为同构 picker 的便捷 init。`rowCount` 派生自 `rowHeights.count`，`expandedHeight` = `reduce(+) + (n-1)*spacing + topPadding`。
-    3. `ScreenPickerRow.pickerLayout` 把 `screenSublabel(for:)` 提升为 `static` 调用，按屏 sublabel 是否非 nil 决定该行高度（`[auto, screen1, screen2, ...]`）；automatic 行永远 sublabel 非 nil → 高列。
-    4. `AgentSettingsView.claudeDirPickerLayout` 从 `static` 转 `private var`，读 `isCustomClaudeDir` 决定 "Choose folder…" 行高度；`agentsContentHeight` 从增量 `+=`/`-=` 改成派生 `viewModel.agentsBaseHeight + (expanded ? layout : 0)` 全量重算，同步新增 `.onChange(of: currentClaudeDir)` 兜底用户在 picker 打开状态下切换路径的高度漂移。
-  - **panel 高度不变**(行高之和相同或更小,不会 overshoot);scrollbar flicker 保护不变(`baseHeightRecorded` 仍只接受首次 GeometryReader 报告)。
-  - **未来 picker 集成**：当调用方传的 sublabel 表达式含条件/可选数据时,直接用 `PickerLayout(rowHeights:)` 而不是同构 init。详见 spec `docs/specs/2026-07-07-picker-height-and-broadcast-pattern.md` 的 "rowHeight 必须匹配"`+ 新增的内部 `showsVerticalSublabel` 注释。
-  - **build 验证**：`xcodebuild -project Nook.xcodeproj -scheme Nook -configuration Debug build` 通过。-->
+    2. `PickerLayout` 支持每行独立高度 `init(rowHeights: [CGFloat])`，保留原 `init(rowCount:rowHeight:)` 作为同构 picker 的便捷 init。
+    3. `ScreenPickerRow.pickerLayout` 把 `screenSublabel(for:)` 提升为 `static` 调用,按屏 sublabel 是否非 nil 决定该行高度。
+    4. `AgentSettingsView.claudeDirPickerLayout` 从 `static` 转 `private var`，读 `isCustomClaudeDir` 决定 "Choose folder…" 行高度；`agentsContentHeight` 从增量 `+=`/`-=` 改成全量重算 + `.onChange(of: currentClaudeDir)` 兜底。
+
+  ### B. Shortcuts 页面 panel 底部空白
+  - **症状**：Shortcuts 设置页面板底部（Restore Defaults 按钮下方）有约 44pt 空白带。
+  - **根因**：`NotchViewModel.openedSize` case `.shortcuts` 硬编码 `height: 480`，原注释 "446 → 480" 给出估算后故意 round up。估算本身有 4pt 误差（`ShortcutRow` 注释估 40pt，实际 36pt = `MenuRow` 等高），叠加 round up 共同造成 ~44pt overshoot。
+  - **修复**（1 文件）：换成与其他 settings 页面相同的 `PageLayout + panelHeightForPage` 编译期公式，行数复用 `shortcutsItemCount` 派生（9 行 + 2 divider），同样 `min(raw, maxHeight)` 窗口 cap。结果 ~436pt（vs 旧 480pt）。
+
+  - **build 验证**：`xcodebuild ... build` 通过。
+  - **PR**：commit `5f8bc86` (A) + `fc3bf50` (B) 都已 push 到 `release/1.3.2`，upstream **PR #9** "1.3.2 follow-up" 自动更新。-->
 
 ## 📥 Next Phases
 <!-- 下一步候选，按优先级 -->
