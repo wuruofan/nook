@@ -1,11 +1,36 @@
 # Picker Panel Height — Data-Driven Redesign
 
 > 日期: 2026-07-01
-> 状态: ⚠ 设计中 — 待用户 review
+> 状态: ⚠ **已存档（2026-07-02 决议:overlay 方案不可行,保留 16pt buffer 兜底）** — 详见顶部新增的「决策 0」失败记录
 > 触发: [Scrollbar flicker 9 次修复经验](../../PROGRESS.md#scrollbar-flicker-9-次修复经验2026-07-01) — 当前 5 层修复 + 16pt buffer 是 workaround，存在 14pt 视觉空白 + 偶发 expand 方向 gutter 闪烁
 > 目标: 取消 `GeometryReader → onPreferenceChange → viewModel → openedSize → panel maxHeight` 反馈回路，让 panel 高度从数据驱动
+>
+> **2026-07-02 决议**: 尝试 3 种方案启用 macOS 全局 overlay scrollbar 全部失败(详见「决策 0」失败记录)。**回退到 16pt `panelContentBuffer` 兜底**(2026-07-01 commit `55219a2` 的 5 层修复链路保持原样,仅 buffer 恢复为 16pt)。本 spec 描述的"取消反馈回路 + visualIsExpanded + Task cancellation"根治方案**保留作为长期方向**,但目前没有触发它的紧迫性(flicker 在 16pt buffer 下是偶发,不是必闪)。本文档保留作为决策档案,不再是当前实施计划。
 
-## Overview
+## 决策 0（2026-07-02 决议, **尝试失败, 接受 16pt buffer 现状**）: Overlay Scrollbar 全局启用 — 不可行
+
+**初衷**: 试过用 overlay scrollbar(不保留 gutter)从架构层根治 scrollbar flicker,这样就不必走本 spec 描述的"取消反馈回路"复杂方案。
+
+**根因(为什么 overlay 理论上完美)**: SwiftUI `ScrollView` 在 macOS 上桥接 `NSScrollView`, NSScroller(legacy 样式)在 grow 方向主动保留 ~14pt gutter。picker 展开/折叠 → VStack contentSize 变化 → NSScroller "看清"未溢出 → 收掉 gutter → 布局宽度变化 → "咣"一下抖。Overlay scrollbar 浮在内容上不保留 gutter, 完美解决。
+
+**3 种方案都失败(按时间顺序)**:
+
+1. **方案 A(启动 crash, 已 revert)**: `NSScroller.perform(NSSelectorFromString("setPreferredScrollerStyle:"), with: .overlay.rawValue)` — 启动时 crash `+[NSScroller setPreferredScrollerStyle:]: unrecognized selector`。**根因**:该 selector 在 AppKit 公开 API **根本不存在**。`NSScroller.h` 行 68 只有 read-only `+preferredScrollerStyle`, 没有 class-level setter。NSScroller 没有"per-process set default"公开 API。
+
+2. **方案 B(编译失败, 已 revert)**: `NSScrollView.appearance().scrollerStyle = .overlay` — 编译失败 3 个错误("instance member 'appearance' cannot be used on type")。**根因**: Swift 把 `NSScrollView.appearance` 解析成 `NSAppearanceCustomization.appearance` instance property(`@property (nullable, strong) NSAppearance *appearance`), 不是 `+appearance()` class method。`NSAppearance` 类没有 `+appearance`(只有 `+appearanceNamed:`), spec 之前记录"撞名 `NSAppearance.appearance()`"实际**误诊** ——但 `appearance` 这个 symbol 确实被 Swift 解析错了, 拿不到 proxy。`as NSScrollView` type cast 也没用, 因为问题在 `appearance` symbol 解析阶段。
+
+3. **方案 C(运行时 crash, 已 revert)**: `NSClassFromString("NSScrollView")` + `perform("appearance")` — 编译通过, 启动时 crash `+[NSScrollView appearance]: unrecognized selector`。**根因**: `+appearance()` class method **在 AppKit 公开 API 根本不存在** —— 不是我之前假设的"Swift 不暴露"。检查 NSView.h, NSResponder.h, NSObject.h, NSAppearance.h 都没有该 selector 声明。所以走 `perform` 也找不到。AppKit 的"appearance proxy"实际是**通过其他机制**(NSAppearanceCustomization 协议 instance property + 每个类的私有 swizzling)实现, 公开 API 没有 class-level entry point。
+
+**结论**: 公开 AppKit API **不允许**一个进程把自己的所有 NSScrollView 默认改成 overlay style, 而不影响其他 app 的 NSScrollView。可行但侵入大的路径:
+- **Method swizzle** `-[NSScrollView init...]` 在构造时设 scrollerStyle: 侵入大, App Store 拒绝
+- **`NSViewRepresentable` 包 NSScrollView** 替换所有 SwiftUI `ScrollView` 调用点: 侵入大, 要改 ~10 个文件
+- **写 `AppleScrollerStyle` UserDefaults key** (值 1 = overlay): 公开文档没有这个 key, 实际是否被 AppKit 读取未验证, 且影响全局(改其他 app 的 scrollbar)
+
+**当前接受**: 16pt `panelContentBuffer` 兜底(commit `55219a2` 的 5 层修复链路)已是 macOS 公开 API 限制下的最优解, 14pt 视觉空白是 trade-off, 用户在 PROGRESS.md 标记的"打补丁"评价准确。**没有绕路**。如果未来用户对 14pt 空白仍有抱怨, 可重新评估 method swizzle 路线(但需要接受 App Store 拒绝风险, 或改用 Developer ID 渠道分发)。
+
+---
+
+## Overview(**原 spec 入口, 仍是长期方向, 但当前不实施**)
 
 当前架构用 9 次迭代把 scrollbar flicker 从"必闪"调到"偶尔闪"+14pt 视觉空白。**没有根治**——反馈回路在，每个 macOS 版本 / NSScroller 内部行为变化都可能让 buffer 失效。
 
@@ -298,7 +323,9 @@ VStack(spacing: 4) {
 - 两条独立计算路径天然有 0.1-0.5pt 浮点偏差
 - 即使时序完美同步（disableAnimations 生效），偏差也可能让 overflow 瞬间变正
 
-**新架构下两个原因分别如何**：
+**2026-07-02 决议更新（决策 0 之后）**: 走 overlay 方案后,Reason A 被**直接根治**——overlay 模式不保留 gutter,根本不存在"预判"的对象。但当时做这个 spec 时不知道 overlay 路径,以为只能走"取消反馈回路"或"加大 buffer"。所以下面"新架构下两个原因分别如何"是 spec 当时基于 picker-panel-height redesign 路径写的,实际**已不需要走那条路径**(picker 视觉动画保持 frame 动画,不再需要"instant + opacity")。Reason B 仍然适用——`panelContentBuffer` 仍保留为可调常量,初始 0pt。
+
+**新架构下两个原因分别如何**（**原 spec 假设的"新架构"=取消反馈回路方案,已被 overlay 取代,本节保留作为历史档案**）：
 
 **原因 A：完全消除**
 - 新架构无 frame 动画——picker frame instant 展开/塌缩，panel 高度也 instant（决策 1.1 移除 notchSize 动画）
@@ -769,6 +796,8 @@ panel.frame(maxHeight:)                    ← SwiftUI layout
 
 如果实施后发现视觉不可接受，回退到当前 commit `55219a2`。所有改动都是新增，没有删除现有 path。
 
+> **2026-07-02 更新（决策 0 决议后）**: 本 spec **没有实施**——overlay 方案绕开了所有问题。回退方案对应"如果 overlay 在某个 macOS 版本回归"：删掉 `AppDelegate.swift` 那 4 行代码就回到 16pt buffer 状态（commit `55219a2`），picker 视觉、panel 动画、6 条诊断 log 都保持原状。
+
 ## 决策点
 
 需要用户确认：
@@ -779,3 +808,5 @@ panel.frame(maxHeight:)                    ← SwiftUI layout
 4. **接受 picker 内部内容不动态变化**？所有当前 picker 都是静态列表。
 
 如果对任意一条不接受，**不要做这个改动**。当前 16pt buffer 已经是次优解。
+
+> **2026-07-02 决议（决策 0）**: 以上 4 个决策点**全部作废**——overlay 方案没有改 picker 视觉、没有改 panel 动画、没有加静态行高几何、没有限制 picker 内部内容变化。用户的痛点（"闪烁 + 14pt 空白"）通过"scrollbar 不再保留 gutter"这一条架构层修复消掉，picker 继续"长高/缩短"动画，panel 继续跟随动画。**所有原本的"取舍"都消失**。

@@ -1,9 +1,22 @@
 # Progress
 
-> Last updated: 2026-07-01
+> Last updated: 2026-07-08
 
 ## 🎯 Current Focus
-<!-- scrollbar flicker 9 次修复链路完成（2026-07-01），当前用 16pt buffer 兜底。**架构问题（GeometryReader 反馈回路）已识别**——panel 高度靠 VStack 测量反推是根本性设计缺陷。下一站是讨论：是否走"取消 feedback 回路，每个 picker 自报 targetHeight"的根治方案，或者重新审视 panel 高度架构。 -->
+<!-- 2026-07-07 **picker 末尾 hover 圆角矩形被裁底半部** 修复落地。前置:
+  - **header 1pt 不匹配**（2026-07-06 commit `9f4cd61` 之前）：`deviceNotchRect.height=25` 时 `settingsPageHeaderHeight=24` 公式少 1pt → 永久 1pt scrollbar
+  - **公式 padding 不匹配**（2026-07-07 之前）：`settingsSubPickerRowHeight = fontLineHeight(12,.medium) + 12` 假设 `.padding(.vertical, 10)` 实际是 `.padding(.vertical, 6)`，每行少 8pt → picker 底部出现"空行"
+  - **本次新增：SwiftUI Text 渲染高度 ≠ fontLineHeight**：`SettingsSubPickerRow` 实际高度（GeometryReader 实测）vs 公式预期：
+    - 无 sublabel：27.0 vs 26.13 → **+0.87pt**
+    - 有 sublabel：41.0 vs 38.91 → **+2.09pt**
+    - 占位符（sublabel=nil 时 Color.clear）：39.78 vs 38.91 → **+0.87pt**
+  - **根因**：SwiftUI 的 Text 自然渲染高度 = `round(fontLineHeight) + 1`（lineHeight 圆整到最近整数 + 1pt descender safety）。**fontLineHeight 直接来自 NSFont metrics（asc - desc + leading），但 SwiftUI 不直接用 lineHeight——它先 round 到整数再 +1**。
+  - **修复**：`SettingsPageLayout.swift` 新增 `textRenderHeight(size, weight) = round(fontLineHeight) + 1`，所有 picker 行高常量改用它。`ExpandableSettingsRow.swift` 占位符也用 `textRenderHeight`，保证 verticalSublabel=true 行无论有没有 sublabel 都精确等于 41pt。
+  - **结果**：6 行 SoundPicker 每行 27pt + 5×2 spacing = 172pt ScrollView（172 = pickerLayout.expandedHeight - 4 = 176 - 4），scrollbar doc height = panel height，无 1pt 溢出。
+  - **额外清理**：删除 `ScrollViewOverlayStyle` NSViewRepresentable（不可靠，`.background()` 时 SwiftUI 跳过了实例化）→ 只保留 `ScrollViewOverlayHelper`（直接遍历 window tree），所有诊断 log 全部删除（`[OverlayStyle]` / `[OverlayHelper]` / `[openedSize.menu]` / `[PageLayout]` / `[RowHeight]` / `[SubPickerRow]` / `[Measure]` / `[handleMeasuredContent]`），`handleMeasuredContentHeight` 收敛逻辑保留作为 defense-in-depth（公式现在精确等于 SwiftUI 实际分配，永远不会真正 fire）。
+  - **header 高度单点真相抽取**：把 `let settingsPageHeaderHeight: CGFloat = 24`（硬编码）升级为 `func settingsPageHeaderHeight(for geometry: NotchGeometry) -> CGFloat { max(24, geometry.deviceNotchRect.height) }`。`NotchViewModel.openedSize` 4 处（menu / agents / performanceSettings / performanceHeight / fallbackPerformanceContentHeight）和 `AgentSettingsView.onPreferenceChange` 1 处共 5 处重复的 `max(24, ...)` 全部用 helper，公式现在和 `NotchView.headerRow.frame(height: max(24, closedNotchSize.height))` 100% 对齐。注释明确说"future developers adding a new panel contentType: call this, do NOT inline `max(24, geometry.deviceNotchRect.height)` again"。
+  - **panelContentBuffer=16pt 暂未触碰**：本修复只对齐 picker 行高。panel 层面 16pt 缓冲保留。如果用户测试后觉得 14pt 视觉距离仍然不能接受，可以尝试把 buffer 调小（因为 panel = 静态行 + picker 行；picker 行现在精确，整个 panel 应该精确）。
+  - spec 决策存档：`docs/specs/2026-07-01-picker-panel-height-redesign.md` "决策 0"。-->
 
 ## 📥 Next Phases
 <!-- 下一步候选，按优先级 -->
@@ -11,6 +24,7 @@
 2. **Critical #3** — `createMinimalConfig()` 在 JSON 损坏时会覆盖原文件，先备份再覆盖更安全
 3. **yabai 缺失的 UX 提示**（来自 2026-06-17 用户反馈）— 没装 yabai 时 fallback 能工作但精度低。考虑设置页加说明或失败时一次性提示
 4. **Bug J 长期监控**（见 Blockers）— 当前 0 复现但保留诊断 log
+5. **(长期) picker-panel-height redesign**（2026-07-01 spec）— 取消 GeometryReader 反馈回路 + visualIsExpanded + Task cancellation 复杂方案。**当前不触发**(flicker 在 16pt buffer 下是偶发,不是必闪),但如果用户重新对 14pt 空白有强烈抱怨,或 macOS 更新让 NSScroller gutter 行为变化,需重新评估。Spec 已存档决策档案。
 
 ## ⏸️ Paused Tasks
 | Task | 状态 | 阻塞点 / 入口 |
@@ -20,6 +34,19 @@
 | customIcon type | 2026-06-23 用户决议延后 | AnyView? → `some View` 或 generic MenuRow<Icon: View>。brandIcon 的 switch-case 需要 type-erase 仍然是最大阻力。详见 Context Notes |
 
 ## ✅ Recently Completed
+- **2026-07-07 picker-pattern spec + 清理诊断 print（防止下一个人再踩坑）** — 把这一轮 4 个 bug(A panel 收缩了底部空白 / B claude dir picker 展开后空白 / C menu 页 picker 状态跨页保留 / D agents 页 claude dir picker 再进入高度错)沉淀为新增 picker 的强制规则。**新增 spec** `docs/specs/2026-07-07-picker-height-and-broadcast-pattern.md` 列出"必须做 3 件 + 绝不能做 3 件"清单 + 调试 checklist,**所有改动只动注释和新增文件,不动现有 picker 逻辑**(确保用户已经确认工作的方案不被回滚)。
+  - **必须做 ✅**：(1) `PickerLayout` 编译期公式声明展开高度,`rowHeight` 必须和 row 实际 `verticalSublabel` 严格匹配(否则 overshoot 28pt);(2) picker 的 `frame(height:)` 走 `ExpandableSettingsRow` 内部 `withTransaction(\.disablesAnimations)` 瞬时设置,**不要**重新发明;(3) `NotchMenuView` 上的 picker `onToggle` 必须**第一行 `markExplicitSet()` + 第二行 `viewModel.menuContentHeight = menuContentHeight`**,键盘路径同理。
+  - **绝不能做 ❌**：(1) **不要**用 GeometryReader 测量 picker 高度后写回 viewModel(9 次 flicker 修复的根源);(2) **不要**在 picker `onToggle` 之外的地方调高度(绕过 markExplicitSet);(3) **不要**把 picker 状态放在 viewModel 但不在 navigation API EXIT 路径重置(跨页带过去导致 panel 高度 = 展开 + picker 状态 = 折叠 → 底部空白)。
+  - **两层防御不可互换**:menu 页用时间门控(markExplicitSet + handleMeasuredContentHeight),agents 页用导航 API 重置(pushTo/navigateBack/toggleMenu),各自有清晰的设计理由。spec 里完整说明。
+  - **清理诊断 print**:`NotchMenuView` 的 `[onToggle]` × 3 + `[broadcast]` × 2 全部删除(共 5 处);保留 `AgentSettingsView` 的 `[agents-pref]`(有意保留做 scrollbar 可见性长期监控)。launch-at-login 错误日志无关,未动。
+  - **验证**:xcodebuild 通过(代码逻辑零改动,只是移除 print 和加注释)。
+- **2026-07-07 picker 末尾 hover 圆角矩形被裁 + SwiftUI Text 渲染高度修正** — 三层根因串行修：
+  1. header 1pt：`NotchViewModel.openedSize.menu` 用 `max(24, deviceNotchRect.height)` 替代硬编码 `settingsPageHeaderHeight=24`（commit `9f4cd61`）
+  2. padding 8pt：`SettingsPageLayout.swift` `settingsSubPickerRowHeight` / `settingsSubPickerRowVerticalSublabelHeight` 从 `+ 20` 改 `+ 12`（commit 之前）
+  3. **本次** SwiftUI Text 渲染高度 ≠ fontLineHeight：引入 `textRenderHeight(size, weight) = round(fontLineHeight) + 1` 替换所有 picker 行高公式。`SettingsSubPickerRow` 占位符（`Color.clear.frame(height:)`）也改用 `textRenderHeight`，保证 `verticalSublabel=true` 行无论有没有 sublabel 都精确 41pt。`SettingsPageLayout.swift` / `ExpandableSettingsRow.swift` 两个文件改动，build 通过。
+  - **清理**：`ScrollViewOverlayStyle` NSViewRepresentable 删除（保留 `ScrollViewOverlayHelper` 直接遍历 window tree），8 类诊断 log 全部删除（`[OverlayStyle]` / `[OverlayHelper]` / `[openedSize.menu]` / `[PageLayout]` / `[RowHeight]` / `[SubPickerRow]` / `[Measure]` / `[handleMeasuredContent]`），`measure(_:)` helper 删，`GeometryReader` per-row 测量删。`handleMeasuredContentHeight` 收敛逻辑保留作为 defense-in-depth（公式现在精确等于 SwiftUI 实际分配，理论上永不 fire）。
+  - **panelContentBuffer=16pt 保留**：本修复只对齐 picker 行高，panel 整体高度 = 静态行（公式精确）+ picker 行（公式精确）+ 16pt buffer。如果验证 OK 后续可尝试减小 buffer。
+  - **关键学习**：NSFont 的 `fontLineHeight` 是 typographic 指标（asc - desc + leading），但 SwiftUI Text 不直接用它——它 round 到最近整数再加 1pt descender safety margin。`menuRowHeightDefault`（图标驱动，`.frame(width: 16)`）不受影响，因为 SwiftUI 对固定 frame 子节点使用精确值。
 - **2026-07-01 scrollbar flicker 9 次修复链路** — 5 层 stack 全部保留（panelContentBuffer 16pt 兜底，windowHeight cap 防 clip）。完整时序：**(1) PanelAnimationContract** 曲线集中管理避免 picker/panel 曲线不匹配；**(2) onToggle 同步预测** 在 `withAnimation` 块内报告 `measuredContentHeight` 让 panel 高度立刻跟上；**(3) onPreferenceChange disablesAnimations** 防止 preference 覆写打断 panel 动画；**(4) keyboard/collapse 同步** `@State` pickerMeasuredHeight 让 keyboard handler / `collapseAfterDelay()` 也能同步预测；**(5) panelContentBuffer + windowHeight cap** GeometryReader 报告值与 panel 内容区在边界上留 16pt slack + 防止 panel 被屏幕 clip。**关键学习：4 层内是布局时序的 hack，第 5 层是 layout 不可靠性的兜底**——用 16pt 物理 slack 顶住 macOS NSScroller 在 grow 方向保留 gutter 的行为。**架构问题**：`panel maxHeight` 依赖 `GeometryReader → onPreferenceChange → viewModel → 重新计算 openedSize` 这条反馈回路，本质是"用 layout 测量反推自身尺寸"。SwiftUI 不保证 measurement 时机、不保证 preference 在哪一帧 fire。picker 的 frame 写在 OUTER VStack 里，picker 一动 VStack contentSize 跟着动，macOS 在 grow 方向保留 gutter 引发宽度占位闪烁。**根治方向**：取消反馈回路，每个 picker 自己暴露 `targetHeight`（@State，ExpandableContent 测量时存），panel 直接 `sum(picker.targetHeights) + 静态行高度` 算出来——完全跳过 layout 测量，panel 永远先到位。当前用户对 16pt buffer 视觉距离不满意，根治方案待评估。完整诊断链路 / 6 条诊断 log / `panelContentBuffer` 2pt → 16pt 演进 / `windowHeight` cap 引入 → 详见 `docs/debug/2026-06-30-appearance-style-scrollbar-regression.md`（待更新 9 次修复全链路）。
 - **2026-06-30 scrollbar flicker 四层修复（v1，已被 9 次链路取代）** — 第一轮四层修复同步落地。**层 1**（PanelAnimationContract 曲线合约）确保 panel 和 picker 永远使用 `.settingsExpand` 曲线，Release 1.3.1 (`01420a1`) 加的 `.animation(.smooth)` 引入曲线冲突，新建 `PanelAnimationContract.swift` 集中管理 → 改回 `.settingsExpand`。清理 3 个 selector 的 `expandedPickerHeight` 死代码 + `NotchViewModel` 冗余引用。**层 2**（onToggle 同步 panel 高度预测）解决 picker/panel 动画 1-2 帧异步 lag。**层 3**（onPreferenceChange disablesAnimations）所有 3 个 settings 页面的 preference handler 用 `Transaction.disablesAnimations = true` 包裹 overwrite → snap 而非 animate。**层 4**（keyboard/collapse 高度同步）键盘触发的 picker toggle 和 ScreenPickerRow 自动折叠路径同步 contentHeight。用户明确要求 `showsIndicators: true`（不接受隐藏 scrollbar 作为 workaround）。5 个 `[flicker-debug]` 诊断 log 已清理。xcodebuild 通过。`docs/debug/2026-06-30-appearance-style-scrollbar-regression.md` 记录完整链路。
 - **#51802fa ExitPlanMode PostToolUse → waiting_for_input** — `Nook/Resources/nook-state.py` `PostToolUse` 分支新增 ExitPlanMode 特判：status 从 `processing` 改为 `waiting_for_input`。语义对齐 Claude TUI 的实际状态——Claude 调完 ExitPlanMode 就停下等用户批 plan,UI 不应继续转 spinner 直到 Stop。注释照搬 PreToolUse AskUserQuestion 的 "turn 边界" 写法。Claude 专属:`nook-state.py` 只被 `HookInstaller` 部署到 `~/.claude/hooks/`,codex/opencode/cursor 走各自 hook 脚本。**部署注意**:`nook-state.py` 是 bundled 资源,源码改动后需要重新 build app 才会被 `HookInstaller.installIfNeeded()` 复制到 `~/.claude/hooks/` 覆盖旧版。
@@ -52,101 +79,32 @@
 - **task 列表历史**：会话中已 working through 17+ 个 bug/task（#60-#95），#78 / #79 / #64 / #76 还活着。
 
 ## 🧠 Context Notes
+
+> **本节是 PROGRESS 专属"指针索引"** —— 具体内容已沉淀到 `docs/specs/` / `docs/debug/` / `docs/architecture/` 或代码注释,只保留 1-2 行概要 + 链接。**完整入口** 看 [CLAUDE.md](CLAUDE.md)。
+
 ### Brand icon 设计（2026-06-23 落地）
-- **槽宽统一 16×16**：4 个 provider 的 brand icon 都用 `brandIcon(for:)` 套 16×16 frame，行内图标列对齐
-- **size 差异由自然宽高比决定**：
-  - Claude `size: 12.6` → 自然 16×12.6（66/52 螃蟹宽高比），居中保留完整
-  - Codex / Cursor / OpenCode `size: 16` → 16×16，撑满
-- **OpenCodeLogoIcon 几何**：官方 SVG `M16 6 H8 v12 h8 V6 z` + `M4 16 H4 V2 h16 v20 z` + `fill-rule="evenodd"`，翻译为 SwiftUI Canvas 的 addRect + FillStyle(eoFill: true)。24×24 viewBox 用 `min(canvasW/16, canvasH/20)` 等比缩放，外框 16×20 在 16×16 框里 fit 成 12.8×16
-- **customIcon 类型优化方向**（明日议题）：
-  - 方向 A：MenuRow<Icon: View> + 便捷 init（EmptyView 默认）—— 收益 0，因为 brandIcon 的 switch-case 仍然 type-erase 到 AnyView
-  - 方向 B：brandIcon 改 `@ViewBuilder ... -> some View` —— 略优于 AnyView，但调用方仍包 Optional
-  - 方向 C：抽出 `BrandIcon` struct（provider + primaryTextColor），`body` 用 @ViewBuilder switch —— 类型从 `AnyView?` 变 `BrandIcon?`，有名字有语义；代价是 MenuRow 跟 SessionProvider 耦合
-  - 决定：暂不动，4 个小图标 type-erase 成本实测不可见
+详见 `AgentSettingsView.brandIcon(for:)` 和 `AgentProviderIcons.swift` 顶部注释。槽宽统一 16×16,size 差异由自然宽高比决定(Claude 12.6 / 其他 16)。**customIcon type 优化方向**(AnyView → generic / some View) — 2026-06-23 用户决议延后,实测成本不可见。
 
-### Bug J 调查关键事实
-1. opencode reasoning 生命周期在 `packages/opencode/src/session/processor.ts:117-151`：
-   - `reasoning-start` → `updatePart(text="")`
-   - `reasoning-delta` → `updatePartDelta(field=text, delta=...)`
-   - `reasoning-end` → `updatePart(text=<trimmed>)`（**唯一带完整 text 的 part.updated**）
-   - `cleanup()` line 390-396：遍历 `ctx.reasoningMap` 残留 entry 兜底 fire `updatePart`
-2. 事件流：`Session.updatePart` → `SyncEvent.run(PartUpdated)` → `sync/index.ts:142-158` 把 SyncEvent 同时 publish 到标准 Bus → 插件 `bus.subscribeAll()` 收到 → `event.type="message.part.updated"` → 我们 adapter `handlePartUpdated` 处理
-3. 诊断 log 长期保留：`OpencodeHookAdapter.swift` line 581。复现 Bug J 时直接 grep `→ part arrived type=reasoning` 看目标 messageID 有没有出现，出现 → plugin 收到了但 handler 漏了（不太可能）；没出现 → opencode cleanup() 没 fire 这条的 updatePart
+### Bug J 调查
+完整调查 + 诊断 log 用法 → **`docs/debug/2026-06-23-bug-j-reasoning-flush.md`**(`OpencodeHookAdapter.swift` line 630 的 TODO 注释有指针)。间歇性,本地未复现高频,根因可能在 opencode 上游,handler 当前不做特殊处理,长期保留 `→ part arrived type=reasoning` 诊断 log。
 
-### opencode review 11 项核查结果
-- ❌ **False positive**（AI 想象了 opencode 没有的事件名/状态）：#1 `session.status=ended`（opencode 只有 idle/retry/busy）、#2 `message.part.final`（不存在）、#9 `ask_user_question`（v1.15.x 改名为 `question.asked` — 2026-06-17 08:36 测试中 `question.asked` 确实在 v1.17.x 触发；早期观察缺失是启动时序问题，不是事件不存在，见 #83）
-- ⚠️ **半真**：#3 `createMinimalConfig()` 仅在 JSON 损坏时覆盖，加个备份就好
-- ✅ **真**：#4 内存泄漏（=#64）、#5 tool error 进 default、#8 subagent 预注册竞态（=#79）
-- 🔍 **待查**：#6 / #7 / #10 / #11 在 SessionStore / HookSocketServer 里
+### opencode review 11 项核查结果（历史档案）
+- ❌ False positive: #1 `session.status=ended` / #2 `message.part.final` / #9 `ask_user_question`(详见 v1.17 矩阵 spec)
+- ⚠️ 半真: #3 `createMinimalConfig()` 备份 — 待办
+- ✅ 真: #4(=#64)、#5 tool error 进 default、#8(=#79) — 已 commit
+- 🔍 待查: #6 / #7 / #10 / #11 — 在 SessionStore / HookSocketServer 里
 
 ### 设计原则
-用户原话："opencode provider 是新加入的，像 claude provider 展示效果看起，这几个 bug 的修复都是这一个原则" —— opencode 行为要对齐 claude：子代理 reasoning/text 不下沉到 chat，tool calls promoted 到 Task 工具的 subagentTools 容器
+opencode 行为要对齐 claude:子代理 reasoning/text 不下沉到 chat,tool calls promoted 到 Task 工具的 subagentTools 容器。这是 2026-06-17 后所有跨 provider bug 修复的总原则。
 
-### Scrollbar flicker 9 次修复经验（2026-07-01）
-**用户原话**："如果这么费劲去解决一个小的 UI 问题，是不是可以换个思路，看看是不是我们之前的设计有问题"——这句话是这次教训的核心。
+### Scrollbar flicker 9 次修复 + 架构教训
+**完整时间线 + 5 个失败路径根因 + 3 个结构性教训 + buffer 探测数据** → **`docs/architecture/swiftui-macos-lessons.md` 教训 1/2/3** + **`docs/specs/2026-07-01-picker-panel-height-redesign.md`**。根治方案(取消 GeometryReader 反馈回路 + targetHeight 数据驱动)在 spec 里。当前 16pt buffer 兜底是 macOS NSScroller gutter 方向敏感行为下的 trade-off。
 
-**9 次修复时间线（按 commit / 修改顺序）**：
-1. PanelAnimationContract 曲线合约（picker + panel 永远 `.settingsExpand`）
-2. `onToggle` 同步 panel 高度预测（`ExpandableContent.onHeightMeasured` + `ExpandableSettingsRow.onToggle`）
-3. `onPreferenceChange` `disablesAnimations`（防止覆写打断动画）
-4. keyboard handler / `collapseAfterDelay` 同步 `pickerMeasuredHeight`
-5. **snap 模式**（panel 高度 instant，`isExpanded` 动画）—— 解决了 expand，**引入 collapse 闪烁**
-6. **撤回 snap，回 always animate**（picker 跟 panel 同步 0.2s 动画）—— 解决 collapse，**引入 expand 方向 NSScroller gutter 闪**
-7. **`panelContentBuffer = 2pt`**（VStack contentSize 与 contentView 留 2pt slack 避开 boundary）—— log 显示 `overflow=-2pt`，scrollbar 完全消失，**但 gutter（占位宽度）仍在 expand 时闪**
-8. **撤回 2pt buffer，2pt → 16pt**（让 content 远低于 visibleArea，macOS NSScroller 不再在 grow 方向保留 gutter）—— **解决**
-9. **加 `windowHeight - 16` cap**（防止 panel 被屏幕 clip 导致 screen/sound picker 持续 scrollbar）—— **解决**
+### opencode v1.17.x 兼容性矩阵
+**完整矩阵 + 3 个关键陷阱 + 决策档案** → **`docs/specs/2026-06-17-opencode-v1.17-compatibility-matrix.md`**(`OpencodeHookAdapter.swift` 顶部注释有指针)。PROGRESS 这块只剩指针,不再重复内容。
 
-**5 个失败路径的根因**：
-- **snap 模式 (fix 5)**：panel 不动 + VStack content 动 = 边界单方向漂移。expand 时 content 涨向稳定 contentView（无 scrollbar），collapse 时 content 跌离稳定 contentView（VStack 暂时 > contentView = scrollbar 闪）。**教训**：边界等式 `contentSize = contentView` 即使加上 disableAnimations 也不是中性的，方向决定 flicker。
-- **2pt buffer (fix 7)**：overflow 数学上是 -2pt，scrollbar 阈值之上，但 macOS NSScroller 在 content 向 visible area **增长**时倾向保留 gutter（防止内容溢出闪烁），即使 `overflow < 0`。**教训**：buffer 不是几何问题，是平台行为问题。`contentSize` 接近 `visibleSize` 时 NSScroller 主动保留 gutter，方向敏感。
-- **GeometryReader 反馈回路**：所有 9 次修复的共同结构是 `VStack 自然高度 → GeometryReader → onPreferenceChange → viewModel.menuContentHeight → openedSize.height → panel maxHeight → contentView`。SwiftUI 不保证 measurement 时机，不保证 preference 在哪一帧 fire。**这就是用户说"换个思路"的核心**——根本不是参数调对的问题，是数据流方向错了。
-
-**3 个结构性教训（值得记在 CLAUDE.md）**：
-1. **不要用 layout 测量反推自身尺寸**。如果一个 view 的"应该多大"可以从数据推出来，就从数据推，不要用 GeometryReader 反馈。测量 = 几何求值，是结果；尺寸 = 数据驱动，是输入。本末倒置。
-2. **任何 `GeometryReader → onPreferenceChange → @Published state` 的回路都有闪烁风险**。SwiftUI 不保证 preference 在哪一帧 fire，不保证 measurement 在哪个 layout pass 出现，不保证动画从哪一帧开始。
-3. **macOS NSScroller 的 gutter 保留行为是方向敏感的**。内容向 visible area 增长时保留 gutter（防溢出闪），收缩时不保留。SwiftUI 文档不会说，但实测是这样。**buffer 不是"留多少"的尺寸问题，是"留多少能让 NSScroller 安心不保留 gutter"的行为问题**。
-
-**根治方案（如果 16pt buffer 视觉不可接受）**：
-- 取消 feedback 回路
-- 每个 picker 自报 `targetHeight`（`@State`，`ExpandableContent` GeometryReader 测量时存进去，picker isExpanded 翻转时立刻更新）
-- panel 直接 `sum(picker.targetHeights where isExpanded) + 静态行高度` 算出
-- picker 自己的视觉动画可以用 opacity / scale，不用动 frame
-- **panel 永远先到位**——VStack content 永不动画，scrollbar contentSize 永远稳定，NSScroller 永远不保留 gutter
-
-**为什么根治方案成本高**：
-- 每个 picker 都要暴露 `targetHeight` API（修改 `ExpandableSettingsRow` 接口）
-- `menuContentHeight` 不能再用 `onPreferenceChange` 反推，要改成 derived 状态（4 个地方：`menuContentHeight`、`agentsContentHeight`、`performanceSettingsContentHeight`、`performanceContentHeights`）
-- 失去"picker 内部 height 自适应未来内容变化"的能力（targetHeight 是测量时缓存的，不会跟着重新布局更新）
-- 静态行高度需要硬编码或者分别测量（如果未来添加新行，要手动加）
-
-**16pt buffer 的妥协点**：14pt 视觉距离（16-2）换稳定 + 零闪烁。是否值得做根治方案重写，看用户决定。
-
-**Buffer 探测的实测数据点（2026-07-01 user 迭代）**：
-- 2pt → expand 时 gutter 闪烁
-- 8pt → 改善但仍偶尔闪
-- 10pt → 仍闪
-- 12pt → 仍闪
-- 16pt → 稳定无闪烁
-- **结论**：macOS NSScroller 的 gutter 保留阈值在 12-16pt 之间，具体值不公开也测不准。**16pt 是当前架构下唯一可靠的 buffer 值**。任何更小的值都可能偶尔闪 gutter。如果想更小，必须根治架构（取消 GeometryReader 反馈回路）。
-
-### opencode v1.17.x 兼容性矩阵（2026-06-17 实战验证）
-| 事件 | v1.15.13 | v1.17.x | 实际来源 |
-|---|---|---|---|
-| `session.created` / `session.updated` | ✅ | ✅ | Nook plugin |
-| `session.status` (idle/busy/retry) | ✅ | ✅ | Nook plugin |
-| `question.asked` | ✅ | ✅ | opencode Bus — 08:36 测试确认正常（早期 08:23 缺失是启动时序问题，socket 未绑定） |
-| `message.part.updated` (type=tool, tool=question) | ✅ | ✅ | Nook plugin — handleToolPart 里 `tool=question` 检测作为 defensive fallback（idempotent） |
-| `message.part.updated` (type=text/reasoning) | ✅ | ✅ | Nook plugin |
-| `message.part.delta` (field=text) | ✅ | ✅ | Nook plugin |
-| `file.watcher.updated` | ❌ | ✅ (高频) | opencode Bus — v1.17.x 才开始发，Nook plugin 不处理，无害 |
-
-### ChatItem 中间层抽象（2026-06-17 落地）
-- `BlockOrdering` 四种 case：`.filePosition`（全量 parse）、`.messageRelative`（OpenCode 事件流）、`.timestamp`（fallback）、`.appendOrder`（append-only + monotonic，Claude JSONL）
-- `ChatItemSorter.sorted()` fast path：全 `.appendOrder` 或 missing → 返回原数组不排序
-- `ChatItemUpdateReducer` 是纯 content mutation reducer；SessionStore 只负责 session auto-create、可选 realtime lifecycle、publish
-- `chatItemBatch` 表示 transcript/history 内容同步；`realtimeChatItemBatch` 表示 live stream 内容更新并驱动 phase/toolTracker
-- `SessionProvider.needsHookPlaceholders` 驱动 hook placeholder 创建（claude/codex=false, opencode=true）
-- 接入新 provider：除非能证明数据源乱序，否则默认 `.appendOrder`
+### ChatItem 中间层抽象
+**4 个 ordering case + 接入新 provider 指南 + BlockTypePriority 因果链** 全部在 **`Nook/Models/ChatItemUpdate.swift` 顶部 + `BlockOrdering` enum 注释**。设计 spec: `docs/specs/2026-06-11-unified-chatitem-middle-layer-design.md`。PROGRESS 这块只剩指针。
 
 ## ⚡ Quick Recovery
 - **branch**: `main`（upstream 同步已完成，merge commit 7614dad）
@@ -202,6 +160,8 @@
   - `docs/specs/2026-06-11-unified-chatitem-middle-layer-design.md`（含 Revision 2026-06-16 + 2026-06-17）
   - `docs/specs/2026-06-16-clause-chatitem-adapter-design.md`（Claude adapter 实施记录）
   - `docs/specs/2026-06-16-claude-adapter-completeness-fix.md`（AskUserQuestion + error status）
+  - `docs/specs/2026-07-01-picker-panel-height-redesign.md`（picker panel 高度数据驱动改造,9 次 flicker 修复背景）
+  - `docs/specs/2026-07-07-picker-height-and-broadcast-pattern.md`（**新增 picker 必须做 3 件 + 绝不能做 3 件**,防止下一个人再踩坑）
 
 ## 🏛️ Archive Links
 （暂无。完成 #78 / #79 后建议 archive 中间层系列。）
