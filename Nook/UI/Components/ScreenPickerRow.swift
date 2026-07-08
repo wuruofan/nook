@@ -13,15 +13,23 @@ struct ScreenPickerRow: View {
     var secondaryTextColor: Color = .white.opacity(0.4)
     var isFocused: Bool = false
     var onToggle: ((Bool, CGFloat) -> Void)? = nil
-    /// Last measured content height from ExpandableSettingsRow's
-    /// onToggle, used by collapseAfterDelay to call onToggle with
-    /// the correct height for synchronous panel-height prediction.
-    @State private var pickerMeasuredHeight: CGFloat = 0
 
     private var isExpandedBinding: Binding<Bool> {
         Binding(
             get: { screenSelector.isPickerExpanded },
             set: { screenSelector.isPickerExpanded = $0 }
+        )
+    }
+
+    /// Compile-time layout for this picker's expanded content.
+    /// "Automatic" + one entry per available screen; subRows use
+    /// `verticalSublabel: true` (label + sublabel stacked), so
+    /// `rowHeight` is 46.91pt (font-metric-derived: 12pt label + 1pt
+    /// spacing + 10pt sublabel + 20pt vertical padding).
+    static var pickerLayout: PickerLayout {
+        PickerLayout(
+            rowCount: 1 + ScreenSelector.shared.availableScreens.count,
+            rowHeight: settingsSubPickerRowVerticalSublabelHeight
         )
     }
 
@@ -34,10 +42,8 @@ struct ScreenPickerRow: View {
             secondaryTextColor: secondaryTextColor,
             isFocused: isFocused,
             isExpanded: isExpandedBinding,
-            onToggle: { isExpanded, contentHeight in
-                pickerMeasuredHeight = contentHeight
-                onToggle?(isExpanded, contentHeight)
-            }
+            targetHeight: Self.pickerLayout.expandedHeight,
+            onToggle: onToggle
         ) {
             VStack(spacing: 2) {
                 SettingsSubPickerRow(
@@ -104,12 +110,13 @@ struct ScreenPickerRow: View {
 
     private func collapseAfterDelay() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            // Animate both panel height and picker frame together. The
-            // 2pt buffer keeps the OUTER ScrollView's overflow at -2pt,
-            // so the scrollbar's gutter never flashes.
+            // Collapse with the same animation curve used by the row's
+            // own toggle so the panel height and picker frame stay in
+            // lock-step. Target height comes from `Self.pickerLayout` —
+            // no measurement feedback.
             withAnimation(.easeInOut(duration: 0.2)) {
                 screenSelector.isPickerExpanded = false
-                onToggle?(false, pickerMeasuredHeight)
+                onToggle?(false, Self.pickerLayout.expandedHeight)
             }
         }
     }

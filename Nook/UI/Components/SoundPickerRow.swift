@@ -22,6 +22,21 @@ struct SoundPickerRow: View {
         )
     }
 
+    /// Compile-time layout for this picker's expanded content.
+    /// The inner ScrollView caps visible rows at 6 (`min(count, 6) *
+    /// `settingsSubPickerRowHeight`), and subRows have no sublabel
+    /// (font-metric-derived: 12pt label + 20pt vertical padding
+    /// = 34.13pt). We use the capped height because the picker never
+    /// grows beyond 6 rows — extra rows scroll inside the picker's
+    /// own ScrollView.
+    static var pickerLayout: PickerLayout {
+        let visibleRows = min(NotificationSound.allCases.count, 6)
+        return PickerLayout(
+            rowCount: visibleRows,
+            rowHeight: settingsSubPickerRowHeight
+        )
+    }
+
     var body: some View {
         ExpandableSettingsRow(
             icon: "speaker.wave.2",
@@ -31,6 +46,7 @@ struct SoundPickerRow: View {
             secondaryTextColor: secondaryTextColor,
             isFocused: isFocused,
             isExpanded: isExpandedBinding,
+            targetHeight: Self.pickerLayout.expandedHeight,
             onToggle: onToggle
         ) {
             ScrollView {
@@ -49,7 +65,13 @@ struct SoundPickerRow: View {
                     }
                 }
             }
-            .frame(maxHeight: CGFloat(min(NotificationSound.allCases.count, 6)) * 32)
+            // Inner ScrollView height must equal the picker's expected
+            // content height (from `Self.pickerLayout.expandedHeight` minus
+            // the 4pt topPadding baked into PickerLayout). The previous
+            // hardcoded `* 32` left a ~27pt empty row at the bottom of the
+            // expanded picker. The ScrollView still caps at 6 visible
+            // rows — extra sounds scroll inside this ScrollView.
+            .frame(maxHeight: Self.pickerLayout.expandedHeight - 4)
         }
         .onAppear {
             selectedSound = AppSettings.notificationSound
