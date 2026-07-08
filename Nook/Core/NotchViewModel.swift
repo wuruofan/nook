@@ -196,11 +196,35 @@ class NotchViewModel: ObservableObject {
                 height: min(raw, maxHeight)
             )
         case .shortcuts:
-            // 36pt Back + 40pt × 7 ShortcutRows + 36pt Reset + 9pt × 2 dividers
-            // + 4pt × 9 spacings + 16pt outer padding + 24pt header = 446 → 480
+            // Compile-time `PageLayout` matches the menu / agents /
+            // performanceSettings pattern: panel height = sum of row
+            // heights + dividers + VStack spacings + outer padding +
+            // header + 12pt trailing gap (see `panelHeightForPage`).
+            //
+            // Previous hardcoded `480` (the "446 → 480" comment in the
+            // old code) overshot the actual content by ~44pt — visible
+            // as a blank band at the bottom of the panel. The `40pt`
+            // estimate for `ShortcutRow` was wrong; structurally
+            // `ShortcutRow` is identical to `MenuRow` (13pt label +
+            // 12pt SF Symbol icon + 10/10 vertical padding → ~36pt
+            // row), so it matches `menuRowHeight` exactly.
+            //
+            // `shortcutsItemCount` (1 Back + 7 actions + 1 Reset = 9)
+            // is the SOI for the row count — see `shortcutsItemCount`
+            // computed var below.
+            let pageLayout = PageLayout(
+                rowCount: shortcutsItemCount,
+                dividerCount: 2
+            )
+            let raw = panelHeightForPage(
+                pageLayout: pageLayout,
+                expandedPickerHeights: [],
+                geometry: geometry
+            )
+            let maxHeight = max(0, geometry.windowHeight - panelBottomMargin)
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
-                height: 480
+                height: min(raw, maxHeight)
             )
         case .agents:
             let headerHeight = settingsPageHeaderHeight(for: geometry)
