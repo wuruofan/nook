@@ -531,7 +531,11 @@ struct ChatView: View {
                 // accepted focus. Closing on a failed focus leaves the
                 // user looking at nothing — they can't see the question
                 // prompt and they don't know why.
-                DebugLog.shared.write("[focus] success, closing notch and restoring focus")
+                //
+                // NOTE: `notchClose()` defaults to `restorePreviousApp: false`,
+                // so focus stays on the terminal we just focused — which is
+                // exactly what we want here.
+                DebugLog.shared.write("[focus] success, closing notch (terminal keeps focus)")
                 viewModel.notchClose()
             } else {
                 // All focus methods failed. Keep the notch open so the
@@ -539,7 +543,7 @@ struct ChatView: View {
                 // the fallback hint to start a tmux session). Set a
                 // visible error message that gets cleared on next click.
                 DebugLog.shared.write("[focus] all methods failed, keeping notch open")
-                focusErrorMessage = "无法聚焦终端。请手动切换窗口（session.pid 缺失或终端 app 不在已知列表）"
+                focusErrorMessage = "Couldn't focus terminal. Switch to it manually (session.pid missing or terminal app not in the known list)."
             }
         }
     }

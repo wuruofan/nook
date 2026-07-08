@@ -84,21 +84,20 @@ When a git op produces conflicts and PROGRESS.md is one of the conflicted files:
 
 **Why this order matters**: if you `/progress-merge` first, you merge narratives about code states that haven't been reconciled. You'll describe the wrong state or have to redo the merge.
 
-### 4.3 Anti-patterns
+### 4.3 PROGRESS.md Is a Rolling Log
+
+[PROGRESS.md](PROGRESS.md) is a recent-work log that gets archived periodically. PROGRESS holds 1-2 line pointers only — **architecture decisions and bug investigations must be persisted to `docs/specs/` / `docs/debug/` / `docs/architecture/` or code comments**, not just PROGRESS (it will get archived and the detail is lost).
+
+### 4.4 Anti-patterns (workflow)
 
 - ❌ Manually editing `<<<<<<<` / `=======` / `>>>>>>>` in PROGRESS.md — always use `/progress-merge`. Manual merge tends to lose entries.
-- ❌ Writing architecture decisions only to PROGRESS.md — it gets archived. Use docs/specs/ / docs/debug/ / docs/architecture/ for durable knowledge.
 - ❌ Skipping `/progress-save` before commit — the skill is fast, no reason to skip.
 
-## 5. PROGRESS.md Is a Rolling Log
-
-[PROGRESS.md](PROGRESS.md) is a recent-work log that gets archived periodically. **Do not put architecture knowledge or bug investigations only in PROGRESS** — they must be persisted to `docs/specs/` / `docs/debug/` / `docs/architecture/` or code comments. PROGRESS holds 1-2 line pointers only.
-
-## 6. Diagnostic Logging
+## 5. Diagnostic Logging
 
 `/tmp/nook-debug.log` (10 MB rolling) is enabled when the user toggles "Debug log" in settings. Enable it before reproducing a bug.
 
-## 7. Build & Run
+## 6. Build & Run
 
 ```bash
 xcodebuild -project Nook.xcodeproj -scheme Nook -configuration Debug -destination 'platform=macOS' build

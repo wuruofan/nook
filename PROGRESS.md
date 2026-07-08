@@ -1,6 +1,6 @@
 # Progress
 
-> Last updated: 2026-07-08
+> Last updated: 2026-07-08 (focus fix + ⌃O close notch, v1.3.2)
 
 ## 🎯 Current Focus
 <!-- 2026-07-07 **picker 末尾 hover 圆角矩形被裁底半部** 修复落地。前置:
@@ -34,6 +34,13 @@
 | customIcon type | 2026-06-23 用户决议延后 | AnyView? → `some View` 或 generic MenuRow<Icon: View>。brandIcon 的 switch-case 需要 type-erase 仍然是最大阻力。详见 Context Notes |
 
 ## ✅ Recently Completed
+- **2026-07-08 focus 修复 + ⌃O 关 notch + ChatView 日志/文案清理 (1.3.2)** — 三个改动一起:
+  - **focus 修复（核心）**：`NotchViewModel.notchClose(restorePreviousApp: Bool = false)`。默认 `false`（安全），快捷键路径（`handleShortcutAction` 的 `.toggleNotch`/`.closeNotch` 分支）显式传 `true`。**关键细节：`previousActiveApp` 在每次 close 时无条件清空**，否则鼠标关闭会留下陈旧引用 → 下次快捷键关闭恢复到错的 app。`restoreFocus()` 私有方法删除（内联到 notchClose 末尾）。
+  - **副作用：ChatView 隐藏 bug 顺手修了**：`focusTerminal()` 成功后 `notchClose()` 默认不再恢复焦点 → 终端保持焦点（之前 `restoreFocus()` 会撤销 tryFocusTerminal 的成果，把焦点拽回 Nook 之前的 app）。日志从 `"closing notch and restoring focus"` 改成 `"closing notch (terminal keeps focus)"`，注释里说明依赖 `notchClose` 默认 `false`。
+  - **⌃O 关 notch**：`MusicCardView` 增加 `onOpenSourceApp: () -> Void` 闭包参数（不传 viewModel，避免耦合），`SessionListView.handleOpenMusicSource()` 内部做 `openSourceApp() + notchClose()`。artwork 点击和 ⌃O 两条路径都走闭包，行为一致。顺序：先 `openSourceApp()`（用户意图），后 `notchClose()`（默认 `restorePreviousApp: false`，不抢焦点）。
+  - **ChatView 中英混排清理**：`focusErrorMessage = "无法聚焦终端..."` 翻成 `"Couldn't focus terminal. Switch to it manually (session.pid missing or terminal app not in the known list)."`。文件内其他中文用户文案未触及（本次范围外）。
+  - **版本**：1.3.1 → 1.3.2（patch，纯 bug fix / UX polish），`project.pbxproj` 2 处 + `RELEASE_NOTES.md` 新增 `## 1.3.2` 段。
+  - **build 验证**：xcodebuild Debug 通过。
 - **2026-07-07 picker-pattern spec + 清理诊断 print（防止下一个人再踩坑）** — 把这一轮 4 个 bug(A panel 收缩了底部空白 / B claude dir picker 展开后空白 / C menu 页 picker 状态跨页保留 / D agents 页 claude dir picker 再进入高度错)沉淀为新增 picker 的强制规则。**新增 spec** `docs/specs/2026-07-07-picker-height-and-broadcast-pattern.md` 列出"必须做 3 件 + 绝不能做 3 件"清单 + 调试 checklist,**所有改动只动注释和新增文件,不动现有 picker 逻辑**(确保用户已经确认工作的方案不被回滚)。
   - **必须做 ✅**：(1) `PickerLayout` 编译期公式声明展开高度,`rowHeight` 必须和 row 实际 `verticalSublabel` 严格匹配(否则 overshoot 28pt);(2) picker 的 `frame(height:)` 走 `ExpandableSettingsRow` 内部 `withTransaction(\.disablesAnimations)` 瞬时设置,**不要**重新发明;(3) `NotchMenuView` 上的 picker `onToggle` 必须**第一行 `markExplicitSet()` + 第二行 `viewModel.menuContentHeight = menuContentHeight`**,键盘路径同理。
   - **绝不能做 ❌**：(1) **不要**用 GeometryReader 测量 picker 高度后写回 viewModel(9 次 flicker 修复的根源);(2) **不要**在 picker `onToggle` 之外的地方调高度(绕过 markExplicitSet);(3) **不要**把 picker 状态放在 viewModel 但不在 navigation API EXIT 路径重置(跨页带过去导致 panel 高度 = 展开 + picker 状态 = 折叠 → 底部空白)。

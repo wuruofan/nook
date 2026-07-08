@@ -461,7 +461,16 @@ class NotchViewModel: ObservableObject {
         }
     }
 
-    func notchClose() {
+    /// Close the notch.
+    ///
+    /// - Parameter restorePreviousApp: When `true`, reactivate the app that was
+    ///   frontmost before Nook took focus. Pass `true` only when closing via
+    ///   keyboard shortcut — mouse-click close must not yank focus back, since
+    ///   the user just clicked into another app.
+    ///
+    /// `previousActiveApp` is cleared on every close so the next open captures
+    /// fresh state (otherwise a stale reference could be restored later).
+    func notchClose(restorePreviousApp: Bool = false) {
         // Save chat session before closing if in chat mode
         if case .chat(let session) = contentType {
             currentChatSession = session
@@ -473,14 +482,15 @@ class NotchViewModel: ObservableObject {
             animatedBottomCornerRadius = 12
         }
         contentType = .instances
-        restoreFocus()
-    }
 
-    /// Return focus to the app that was frontmost before Nook opened.
-    private func restoreFocus() {
-        guard let app = previousActiveApp else { return }
+        // Always clear captured reference, regardless of whether we restore —
+        // mouse-close paths drop the focus but must not leave stale state for
+        // a future shortcut close to pick up.
+        let captured = previousActiveApp
         previousActiveApp = nil
-        app.activate(options: [])
+        if restorePreviousApp, let app = captured {
+            app.activate(options: [])
+        }
     }
 
     func notchPop() {
@@ -716,12 +726,12 @@ class NotchViewModel: ObservableObject {
         switch action {
         case .toggleNotch:
             if status == .opened {
-                notchClose()
+                notchClose(restorePreviousApp: true)
             } else {
                 notchOpen(reason: .click)
             }
         case .closeNotch:
-            notchClose()
+            notchClose(restorePreviousApp: true)
         case .selectPrevious:
             selectPreviousItem()
         case .selectNext:
