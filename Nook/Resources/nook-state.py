@@ -120,9 +120,20 @@ def main():
             state["tool_use_id"] = tool_use_id_from_event
 
     elif event == "PostToolUse":
-        state["status"] = "processing"
-        state["tool"] = data.get("tool_name")
+        tool_name = data.get("tool_name")
+        state["tool"] = tool_name
         state["tool_input"] = tool_input
+        # ExitPlanMode is a turn boundary: once Claude has finished
+        # presenting the plan it stops and waits for the user to
+        # approve / reject before generating further output. Surface
+        # it as `waiting_for_input` so Nook drops the processing
+        # spinner immediately and shows the green "waiting" indicator,
+        # matching Claude's TUI state. Every other tool keeps the
+        # generic "processing" status until the Stop hook fires.
+        if tool_name == "ExitPlanMode":
+            state["status"] = "waiting_for_input"
+        else:
+            state["status"] = "processing"
         # Send tool_use_id so Swift can cancel the specific pending permission
         tool_use_id_from_event = data.get("tool_use_id")
         if tool_use_id_from_event:

@@ -23,6 +23,16 @@ struct SessionListView: View {
     private var showsPerformanceRow: Bool { isPerformanceMonitorEnabled }
     private var showsMusicCard: Bool { musicManager.isVisible }
 
+    /// Open the music source app (Apple Music / Spotify / etc.) and dismiss
+    /// the notch so the user actually sees the app they just asked for.
+    /// `restorePreviousApp` defaults to `false` because activating the music
+    /// app is the user's intent — we must not yank focus back to wherever
+    /// Nook stole it from.
+    private func handleOpenMusicSource() {
+        musicManager.openSourceApp()
+        viewModel.notchClose()
+    }
+
     private var maxInstancesListHeight: CGFloat {
         InstancesListLayout.maxListHeight(
             rowHeight: instanceRowHeight
@@ -54,8 +64,11 @@ struct SessionListView: View {
         VStack(spacing: 8) {
             if musicAbovePerformance {
                 if showsMusicCard {
-                    MusicCardView(musicManager: musicManager)
-                        .measureHeight(using: MusicCardHeightKey.self) { musicCardHeight = $0 }
+                    MusicCardView(
+                        musicManager: musicManager,
+                        onOpenSourceApp: handleOpenMusicSource
+                    )
+                    .measureHeight(using: MusicCardHeightKey.self) { musicCardHeight = $0 }
                 }
 
                 if showsPerformanceRow {
@@ -73,8 +86,11 @@ struct SessionListView: View {
                 }
 
                 if showsMusicCard {
-                    MusicCardView(musicManager: musicManager)
-                        .measureHeight(using: MusicCardHeightKey.self) { musicCardHeight = $0 }
+                    MusicCardView(
+                        musicManager: musicManager,
+                        onOpenSourceApp: handleOpenMusicSource
+                    )
+                    .measureHeight(using: MusicCardHeightKey.self) { musicCardHeight = $0 }
                 }
             }
 

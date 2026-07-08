@@ -29,6 +29,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // (scroller style override removed 2026-07-02: all three
+        // attempts to set overlay globally crashed at launch:
+        //   1) +[NSScroller setPreferredScrollerStyle:] — selector
+        //      does not exist in AppKit
+        //   2) NSScrollView.appearance().scrollerStyle — Swift
+        //      resolves `appearance` to NSAppearanceCustomization
+        //      instance property, not the +appearance class method
+        //   3) NSClassFromString("NSScrollView") +
+        //      perform("appearance") — also unrecognized (no
+        //      class-level +appearance method exists in AppKit
+        //      public API)
+        // See docs/specs/2026-07-01-picker-panel-height-redesign.md
+        // "决策 0" for the full investigation log. The picker-panel-height
+        // redesign made the buffer obsolete — panel maxHeight equals
+        // ScrollView contentSize at every frame (compile-time row heights),
+        // so no slack is needed.)
+
         AppSettings.registerDefaults()
 
         // Start the on-disk debug log mirror as early as possible so

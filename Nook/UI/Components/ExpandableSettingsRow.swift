@@ -23,6 +23,24 @@ struct ExpandableSettingsRow<Content: View, Icon: View>: View {
     var isFocused: Bool = false
     @Binding var isExpanded: Bool
 
+    /// Called inside the `withAnimation(.settingsExpand)` block when the
+    /// user taps the row header. Receives the NEW `isExpanded` value and
+    /// the measured content height — so the parent can update the panel's
+    /// `menuContentHeight` (or equivalent) synchronously, in the same
+    /// animation transaction as `isExpanded.toggle()`. This eliminates
+    /// the 1-2 frame lag between picker animation and panel animation
+    /// that causes scrollbar flicker.
+    ///
+    /// The measured height is 0 on the first expand (before the
+    /// GeometryReader has reported), but `ExpandableContent.hasMeasured`
+    /// suppresses animation in that window, so the snap is harmless.
+    var onToggle: ((Bool, CGFloat) -> Void)? = nil
+
+    /// Height the picker occupies when expanded. Provided by the
+    /// parent via `PickerLayout.expandedHeight` — see
+    /// `SettingsPageLayout.swift`. No measurement feedback.
+    let targetHeight: CGFloat
+
     @State private var isHovered = false
 
     @ViewBuilder private var content: () -> Content
@@ -36,6 +54,8 @@ struct ExpandableSettingsRow<Content: View, Icon: View>: View {
         secondaryTextColor: Color = .white.opacity(0.4),
         isFocused: Bool = false,
         isExpanded: Binding<Bool>,
+        targetHeight: CGFloat,
+        onToggle: ((Bool, CGFloat) -> Void)? = nil,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.icon = icon
@@ -46,6 +66,8 @@ struct ExpandableSettingsRow<Content: View, Icon: View>: View {
         self.secondaryTextColor = secondaryTextColor
         self.isFocused = isFocused
         self._isExpanded = isExpanded
+        self.targetHeight = targetHeight
+        self.onToggle = onToggle
         self.content = content
     }
 
@@ -68,8 +90,18 @@ struct ExpandableSettingsRow<Content: View, Icon: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             Button {
+                let newExpanded = !isExpanded
+                // Report the toggle INSIDE the same `withAnimation` so the
+                // panel height animates alongside the picker's frame. Both
+                // share the same `.easeInOut(duration: 0.2)` curve, so the
+                // OUTER ScrollView's contentView tracks the VStack's
+                // contentSize throughout the transition. Panel height and
+                // VStack contentSize are driven by the same
+                // `PickerLayout.expandedHeight`, so they reach the same
+                // value at the same frame — no scrollbar flash.
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    isExpanded.toggle()
+                    isExpanded = newExpanded
+                    onToggle?(newExpanded, targetHeight)
                 }
             } label: {
                 HStack(spacing: 10) {
@@ -103,16 +135,19 @@ struct ExpandableSettingsRow<Content: View, Icon: View>: View {
                         .stroke(isFocused ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
                 )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(NoPressButtonStyle())
             .onHover { isHovered = $0 }
 
             // Render the same content tree always so the natural height is
-            // measured even while collapsed. ExpandableContent clamps the
-            // visible height to 0 (via .frame + .clipped) when isExpanded is
-            // false, but the background GeometryReader still sees the full
-            // natural size — needed so the first expand animates smoothly
-            // instead of snapping to a measured value.
-            ExpandableContent(isExpanded: isExpanded) {
+            // available regardless of collapsed state. ExpandableContent
+            // clamps the visible height to 0 (via .frame + .clipped) when
+            // isExpanded is false; the picker's target height is provided
+            // by the parent (PickerLayout.expandedHeight) — no measurement
+            // feedback.
+            ExpandableContent(
+                isExpanded: isExpanded,
+                targetHeight: targetHeight
+            ) {
                 VStack(spacing: 2) {
                     content()
                 }
@@ -123,35 +158,7 @@ struct ExpandableSettingsRow<Content: View, Icon: View>: View {
     }
 }
 
-/// Convenience init for the common case (no `customIcon`). Pins
-/// `Icon` to `EmptyView` so existing call sites don't need to
-/// specify the generic parameter.
-extension ExpandableSettingsRow where Icon == EmptyView {
-    init(
-        icon: String,
-        label: String,
-        trailingText: String? = nil,
-        primaryTextColor: Color = .white,
-        secondaryTextColor: Color = .white.opacity(0.4),
-        isFocused: Bool = false,
-        isExpanded: Binding<Bool>,
-        @ViewBuilder content: @escaping () -> Content
-    ) {
-        self.init(
-            icon: icon,
-            customIcon: nil,
-            label: label,
-            trailingText: trailingText,
-            primaryTextColor: primaryTextColor,
-            secondaryTextColor: secondaryTextColor,
-            isFocused: isFocused,
-            isExpanded: isExpanded,
-            content: content
-        )
-    }
-}
-
-// MARK: - Sub Picker Row (二级选项条目，用于 SoundPicker / ScreenPicker / ClaudeDirPicker)
+// MARK: - Sub Picker Row (二级 picker 条目)
 
 struct SettingsSubPickerRow: View {
     let label: String
@@ -177,7 +184,17 @@ struct SettingsSubPickerRow: View {
                 if verticalSublabel {
                     VStack(alignment: .leading, spacing: 1) {
                         labelView
-                        if sublabel != nil { sublabelView }
+                        if sublabel != nil {
+                            sublabelView
+                        } else {
+                            // Reserve the sublabel slot's height so the row
+                            // stays at `settingsSubPickerRowVerticalSublabelHeight`
+                            // whether or not sublabel is present. Uses
+                            // `textRenderHeight` (round(lineHeight) + 1) so the
+                            // placeholder matches the height SwiftUI allocates
+                            // for a real Text view — see SettingsPageLayout.swift.
+                            Color.clear.frame(height: textRenderHeight(size: 10, weight: .regular))
+                        }
                     }
                 } else {
                     labelView
@@ -203,7 +220,7 @@ struct SettingsSubPickerRow: View {
                     .stroke(isFocused ? Color.white.opacity(0.22) : Color.clear, lineWidth: 1)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NoPressButtonStyle())
         .onHover { isHovered = $0 }
     }
 
@@ -258,8 +275,40 @@ struct SettingsSubToggleRow: View {
                     .fill(isFocused ? Color.white.opacity(0.08) : (isHovered ? Color.white.opacity(0.06) : Color.clear))
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NoPressButtonStyle())
         .onHover { isHovered = $0 }
         .opacity(locked ? 0.5 : 1.0)
+    }
+}
+
+/// Convenience init for the common case (no `customIcon`). Pins
+/// `Icon` to `EmptyView` so existing call sites don't need to
+/// specify the generic parameter.
+extension ExpandableSettingsRow where Icon == EmptyView {
+    init(
+        icon: String,
+        label: String,
+        trailingText: String? = nil,
+        primaryTextColor: Color = .white,
+        secondaryTextColor: Color = .white.opacity(0.4),
+        isFocused: Bool = false,
+        isExpanded: Binding<Bool>,
+        targetHeight: CGFloat,
+        onToggle: ((Bool, CGFloat) -> Void)? = nil,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.init(
+            icon: icon,
+            customIcon: nil as Icon?,
+            label: label,
+            trailingText: trailingText,
+            primaryTextColor: primaryTextColor,
+            secondaryTextColor: secondaryTextColor,
+            isFocused: isFocused,
+            isExpanded: isExpanded,
+            targetHeight: targetHeight,
+            onToggle: onToggle,
+            content: content
+        )
     }
 }

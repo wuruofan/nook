@@ -121,6 +121,13 @@ class NotchViewModel: ObservableObject {
     /// the panel doesn't have to grow on first appearance (which would briefly show a
     /// scrollbar while content overflows the still-shrinking frame).
     @Published var agentsContentHeight: CGFloat = 380
+    /// Captured base height of the agents page (no picker expanded), as
+    /// last measured by the GeometryReader. Persisted so navigation
+    /// round-trips (agents → menu → agents) can reset `agentsContentHeight`
+    /// back to the correct baseline instead of either defaulting to 380
+    /// or carrying over the stale `+= expandedHeight` from the previous
+    /// session. See `AgentSettingsView.onPreferenceChange`.
+    @Published var agentsBaseHeight: CGFloat = 380
     /// Live-measured content height of the performance settings page VStack.
     /// Default covers the "Visible Metrics" row collapsed state.
     @Published var performanceSettingsContentHeight: CGFloat = 230
@@ -129,9 +136,6 @@ class NotchViewModel: ObservableObject {
 
     // MARK: - Dependencies
 
-    private let screenSelector = ScreenSelector.shared
-    private let soundSelector = SoundSelector.shared
-    private let claudeDirSelector = ClaudeDirSelector.shared
     /// The app that was frontmost before Nook took focus (for restoring on close).
     private(set) var previousActiveApp: NSRunningApplication?
 
@@ -145,6 +149,14 @@ class NotchViewModel: ObservableObject {
     var screenRect: CGRect { geometry.screenRect }
     var windowHeight: CGFloat { geometry.windowHeight }
 
+    /// Bottom margin kept clear of the screen edge so the panel never
+    /// bleeds into the dock / menu bar. The window itself is already
+    /// sized to the usable area, but `geometry.windowHeight` is the
+    /// hard upper bound on the panel — capping `openedSize.height` to
+    /// it prevents the panel from being clipped on small screens (e.g.
+    /// 13" MacBook) when the menu has a tall Sound picker expanded.
+    private let panelBottomMargin: CGFloat = 16
+
     /// Dynamic opened size based on content type
     var openedSize: CGSize {
         switch contentType {
@@ -155,13 +167,33 @@ class NotchViewModel: ObservableObject {
                 height: 580
             )
         case .menu:
-            // Height = live-measured VStack content + headerRow (device notch height,
-            // minimum 24pt for non-notched) + 12pt bottom padding.
-            // GeometryReader inside NotchMenuView reports actual content height.
-            let headerHeight = max(24, geometry.deviceNotchRect.height)
+            // Height = compile-time-derived VStack content (sum of static
+            // row layout + expanded picker heights, see PageLayout /
+            // PickerLayout in SettingsPageLayout.swift) + header + 12pt
+            // trailing gap. Panel maxHeight and ScrollView contentSize
+            // are mathematically equal at every frame, so no buffer is
+            // needed and the scrollbar never flashes.
+            //
+            // `panelBottomMargin` reserves clearance at the screen
+            // bottom. On smaller screens (e.g. 13" MacBook, ~900pt
+            // window) the Sound picker pushes the panel past the
+            // window; without the cap the panel is clipped and the
+            // OUTER ScrollView shows a permanent scrollbar. Capping
+            // here keeps the panel inside the window — when content
+            // overflows the cap, the outer scrollbar appears as
+            // expected (`showsIndicators: true`).
+            //
+            // `settingsPageHeaderHeight(for:)` is the SINGLE source of
+            // truth for the header height — see `SettingsPageLayout.swift`
+            // for the full rationale and the 2026-07-06 `1pt overflow`
+            // bug that motivated this helper. Do NOT inline
+            // `max(24, geometry.deviceNotchRect.height)` here.
+            let actualHeaderHeight = settingsPageHeaderHeight(for: geometry)
+            let raw = menuContentHeight + actualHeaderHeight + 12
+            let maxHeight = max(0, geometry.windowHeight - panelBottomMargin)
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
-                height: menuContentHeight + headerHeight + 12
+                height: min(raw, maxHeight)
             )
         case .shortcuts:
             // 36pt Back + 40pt × 7 ShortcutRows + 36pt Reset + 9pt × 2 dividers
@@ -171,16 +203,20 @@ class NotchViewModel: ObservableObject {
                 height: 480
             )
         case .agents:
-            let headerHeight = max(24, geometry.deviceNotchRect.height)
+            let headerHeight = settingsPageHeaderHeight(for: geometry)
+            let raw = agentsContentHeight + headerHeight + 12
+            let maxHeight = max(0, geometry.windowHeight - panelBottomMargin)
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
-                height: agentsContentHeight + headerHeight + 12
+                height: min(raw, maxHeight)
             )
         case .performanceSettings:
-            let headerHeight = max(24, geometry.deviceNotchRect.height)
+            let headerHeight = settingsPageHeaderHeight(for: geometry)
+            let raw = performanceSettingsContentHeight + headerHeight + 12
+            let maxHeight = max(0, geometry.windowHeight - panelBottomMargin)
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
-                height: performanceSettingsContentHeight + headerHeight + 12
+                height: min(raw, maxHeight)
             )
         case .performance(let section):
             return CGSize(
@@ -273,13 +309,13 @@ class NotchViewModel: ObservableObject {
     }
 
     private func performanceHeight(for section: PerformanceSection) -> CGFloat {
-        let headerHeight = max(24, geometry.deviceNotchRect.height)
+        let headerHeight = settingsPageHeaderHeight(for: geometry)
         let contentHeight = performanceContentHeights[section] ?? fallbackPerformanceContentHeight(for: section)
         return min(contentHeight + headerHeight + 12, 560)
     }
 
     private func fallbackPerformanceContentHeight(for section: PerformanceSection) -> CGFloat {
-        let headerHeight = max(24, geometry.deviceNotchRect.height)
+        let headerHeight = settingsPageHeaderHeight(for: geometry)
         let chromeHeight = headerHeight + 12
 
         switch section {
@@ -425,7 +461,16 @@ class NotchViewModel: ObservableObject {
         }
     }
 
-    func notchClose() {
+    /// Close the notch.
+    ///
+    /// - Parameter restorePreviousApp: When `true`, reactivate the app that was
+    ///   frontmost before Nook took focus. Pass `true` only when closing via
+    ///   keyboard shortcut — mouse-click close must not yank focus back, since
+    ///   the user just clicked into another app.
+    ///
+    /// `previousActiveApp` is cleared on every close so the next open captures
+    /// fresh state (otherwise a stale reference could be restored later).
+    func notchClose(restorePreviousApp: Bool = false) {
         // Save chat session before closing if in chat mode
         if case .chat(let session) = contentType {
             currentChatSession = session
@@ -437,14 +482,15 @@ class NotchViewModel: ObservableObject {
             animatedBottomCornerRadius = 12
         }
         contentType = .instances
-        restoreFocus()
-    }
 
-    /// Return focus to the app that was frontmost before Nook opened.
-    private func restoreFocus() {
-        guard let app = previousActiveApp else { return }
+        // Always clear captured reference, regardless of whether we restore —
+        // mouse-close paths drop the focus but must not leave stale state for
+        // a future shortcut close to pick up.
+        let captured = previousActiveApp
         previousActiveApp = nil
-        app.activate(options: [])
+        if restorePreviousApp, let app = captured {
+            app.activate(options: [])
+        }
     }
 
     func notchPop() {
@@ -458,6 +504,12 @@ class NotchViewModel: ObservableObject {
     }
 
     func toggleMenu() {
+        // See `pushTo` — same reset applies when leaving agents via
+        // the menu toggle (top-left chevron/xmark).
+        if self.contentType == .agents {
+            agentsClaudeDirPickerExpanded = false
+            agentsContentHeight = agentsBaseHeight
+        }
         contentType = contentType == .menu ? .instances : .menu
     }
 
@@ -484,6 +536,18 @@ class NotchViewModel: ObservableObject {
     /// Push a sub-page onto the navigation stack.
     /// If the stack is empty, records the current content type as the base for back navigation.
     func pushTo(_ contentType: NotchContentType) {
+        // Reset transient agents-page state BEFORE the new View is
+        // created. Hooking into navigation (rather than the View's
+        // `onAppear` / `onChange`) guarantees the picker is closed by
+        // the time the new View's GeometryReader measures — otherwise
+        // the first measurement would snapshot the still-expanded
+        // picker height (base + 88) into `agentsBaseHeight`, and the
+        // panel would re-open at the expanded height with the picker
+        // closed (empty space at the bottom).
+        if self.contentType == .agents {
+            agentsClaudeDirPickerExpanded = false
+            agentsContentHeight = agentsBaseHeight
+        }
         if navigationStack.isEmpty {
             navigationStack.append(self.contentType)
         }
@@ -495,6 +559,11 @@ class NotchViewModel: ObservableObject {
     /// Navigate back from a sub-page (e.g. shortcuts) to the previous page
     func navigateBack() {
         keyboardActivateTrigger = nil
+        // See `pushTo` — same reset applies when leaving agents via Back.
+        if self.contentType == .agents {
+            agentsClaudeDirPickerExpanded = false
+            agentsContentHeight = agentsBaseHeight
+        }
         guard !navigationStack.isEmpty else {
             contentType = .instances
             settingsFocusedIndex = -1
@@ -657,12 +726,12 @@ class NotchViewModel: ObservableObject {
         switch action {
         case .toggleNotch:
             if status == .opened {
-                notchClose()
+                notchClose(restorePreviousApp: true)
             } else {
                 notchOpen(reason: .click)
             }
         case .closeNotch:
-            notchClose()
+            notchClose(restorePreviousApp: true)
         case .selectPrevious:
             selectPreviousItem()
         case .selectNext:

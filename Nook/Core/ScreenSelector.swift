@@ -96,13 +96,6 @@ class ScreenSelector: ObservableObject {
         return screenID(of: screen) == screenID(of: selected)
     }
 
-    /// Extra height needed when picker is expanded
-    var expandedPickerHeight: CGFloat {
-        guard isPickerExpanded else { return 0 }
-        // +1 for "Automatic" option
-        return CGFloat(availableScreens.count + 1) * 40
-    }
-
     // MARK: - Private Methods
 
     private func screenID(of screen: NSScreen) -> CGDirectDisplayID? {

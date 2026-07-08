@@ -1,5 +1,18 @@
 # Release Notes
 
+## 1.3.2
+
+What's New
+
+  - Picker Layout & Scrollbar Fixes — resolves four picker bugs, replaces the GeometryReader feedback loop with a compile-time `PickerLayout`, and lands a five-layer fix for scrollbar flicker on picker toggle. Panel height is now derived from layout instead of measured geometry. See `docs/specs/2026-07-07-picker-height-and-broadcast-pattern.md` for the must-do / must-not rules going forward.
+  - Claude Provider Fixes — falls back to a per-pid status file when a session is stuck processing, and routes `ExitPlanMode` `PostToolUse` events to `waiting_for_input` so the UI no longer hangs on tool approval.
+  - Performance Row Shortcut — ⌃M opens the Performance overview from the instances page. Vibe glow animation refresh rate is reduced for less CPU on long sessions.
+  - Focus Restoration Fix — keyboard shortcut close (Esc / ⌃⌘L) still returns focus to the previously active app, but clicking another app no longer yanks focus back to the pre-notch app. The captured app reference is now cleared on every close so the next open captures fresh state. Side effect: the ChatView "focus terminal" path now keeps focus on the terminal after the notch closes.
+  - ⌃O Closes Notch — pressing ⌃O (or tapping the music artwork) to open the music source app also collapses the notch so the user actually sees the app they just asked for.
+  - AI Contributor Entry Points — adds `CLAUDE.md` and `AGENTS.md` at the project root so AI coding agents pick up Nook's hard constraints (picker integration, single-source-of-truth, cross-process event compatibility) without reading the full architecture lessons.
+  - Settings Polish — suppresses the native Button pressed highlight on row click, and translates the leftover Chinese focus error message in `ChatView` to English to match the rest of the UI.
+  - Release Version — bumps Nook to version 1.3.2.
+
 ## 1.3.1
 
 What's New

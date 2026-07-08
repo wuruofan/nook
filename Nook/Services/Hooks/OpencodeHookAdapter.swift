@@ -5,6 +5,9 @@
 //  Translates raw OpenCode bus events (from the plugin socket) into the
 //  normalised OpencodeSessionEvent surface that Nook's session store consumes.
 //
+//  Compatibility matrix (v1.15.13 / v1.17.x), `question.asked` 陷阱等:
+//  → docs/specs/2026-06-17-opencode-v1.17-compatibility-matrix.md
+//
 //  Event model (reverse‑engineered from opencode v1.15.13 bus):
 //    session.created        → sessionStart (legacy; current versions use session.updated)
 //    session.updated        → sessionStart on first sighting; refreshes cwd afterwards
@@ -642,6 +645,8 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             // log for the missing messageID — if it's absent, the
             // event never reached us; if it's present with textChars=0
             // only, the opencode cleanup() didn't fire updatePart.
+            // Full investigation context (processor.ts 行号 + 事件流 +
+            // 兜底方案): docs/debug/2026-06-23-bug-j-reasoning-flush.md
             Self.logNotice("→ part arrived type=reasoning session=\(sessionId) messageID=\(messageId) textChars=\(text.count)")
             if !messageId.isEmpty {
                 markReasoningMessageId(messageId, sessionId: sessionId)

@@ -22,6 +22,8 @@ struct PerformanceSummaryRow: View {
     let action: () -> Void
 
     @State private var isHovered = false
+    @State private var keyMonitor: Any?
+
     @AppStorage(AppSettings.performanceVisibleSectionsKey) private var visibleSectionsRaw: String = "cpu,memory,battery,network"
 
     private var snapshot: PerformanceSnapshot {
@@ -45,6 +47,33 @@ struct PerformanceSummaryRow: View {
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
+        .shortcutTooltip("⌃M")
+        .onAppear {
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                // Pass through if a text input is focused (mirrors MusicCardView).
+                if let window = event.window,
+                   let responder = window.firstResponder,
+                   responder.isKind(of: NSTextView.self)
+                       || responder.isKind(of: NSTextField.self) {
+                    return event
+                }
+
+                // ⌃M  (keyCode 46 = M; control modifier only, nothing else held)
+                let relevant = event.modifierFlags
+                    .intersection([.command, .control, .option, .shift])
+                if relevant == .control && event.keyCode == 46 {
+                    action()
+                    return nil
+                }
+                return event
+            }
+        }
+        .onDisappear {
+            if let keyMonitor {
+                NSEvent.removeMonitor(keyMonitor)
+                self.keyMonitor = nil
+            }
+        }
     }
 
     @ViewBuilder
@@ -2199,5 +2228,64 @@ private enum PerformanceFormat {
 private extension PerformanceMemorySnapshot {
     var freeBytes: UInt64 {
         totalBytes > usedBytes ? totalBytes - usedBytes : 0
+    }
+}
+
+// MARK: - Shortcut Tooltip
+
+private struct ShortcutTooltip: ViewModifier {
+    let shortcut: String?
+
+    @State private var showTooltip = false
+    @State private var hoverTask: DispatchWorkItem?
+    @State private var hoverPoint: CGPoint = .zero
+
+    func body(content: Content) -> some View {
+        if let shortcut {
+            content
+                .overlay(alignment: .topLeading) {
+                    if showTooltip {
+                        Text(shortcut)
+                            .fixedSize()
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(Color.black.opacity(0.65))
+                            )
+                            .offset(x: hoverPoint.x, y: hoverPoint.y + 16)
+                    }
+                }
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let point):
+                        hoverPoint = point
+                        hoverTask?.cancel()
+                        let task = DispatchWorkItem {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                showTooltip = true
+                            }
+                        }
+                        hoverTask = task
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: task)
+                    case .ended:
+                        hoverTask?.cancel()
+                        hoverTask = nil
+                        withAnimation(.easeInOut(duration: 0.1)) {
+                            showTooltip = false
+                        }
+                    }
+                }
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func shortcutTooltip(_ shortcut: String) -> some View {
+        modifier(ShortcutTooltip(shortcut: shortcut))
     }
 }

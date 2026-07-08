@@ -2,6 +2,10 @@ import SwiftUI
 
 struct MusicCardView: View {
     @ObservedObject var musicManager: MusicManager
+    /// Fired when the user requests the music source app — either via the
+    /// artwork tap or the ⌃O shortcut. The owner wires this up so it can do
+    /// additional work (e.g. close the notch) alongside `openSourceApp()`.
+    let onOpenSourceApp: () -> Void
     @State private var keyMonitor: Any?
 
     var body: some View {
@@ -93,7 +97,7 @@ struct MusicCardView: View {
 
                 // ⌃O: open music app
                 if relevantFlags == .control && event.keyCode == 31 {
-                    musicManager.openSourceApp()
+                    onOpenSourceApp()
                     return nil
                 }
 
@@ -141,7 +145,7 @@ private extension MusicCardView {
     }
 
     var artworkColumn: some View {
-        Button(action: musicManager.openSourceApp) {
+        Button(action: onOpenSourceApp) {
             ZStack(alignment: .bottomTrailing) {
                 Group {
                     if let image = musicManager.albumArt {

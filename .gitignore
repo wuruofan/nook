@@ -46,7 +46,9 @@ dist/
 
 # Xcode backup
 *.xcodeproj.backup/
-CLAUDE.md
 
 # Git worktrees
 .worktrees/
+
+# Xcode profiling data
+*.profraw
